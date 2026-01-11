@@ -8,3 +8,6 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 reports/
+.env
+packages/*/data/
+data/
