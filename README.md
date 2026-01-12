@@ -13,7 +13,6 @@ Create `.env` in the repo root:
 # Telegram bot token from @BotFather
 BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
 
-# IANA timezone (optional, default: UTC)
 BOT_TIMEZONE=UTC
 
 # Postgres connection string (required for local run)
