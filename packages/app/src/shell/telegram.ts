@@ -63,11 +63,12 @@ const extractMessage = (update: Update): IncomingUpdate["message"] => {
   if (!message || !text) {
     return undefined
   }
+  const from = toParticipant(message.from)
   return {
     chatId: ChatId(message.chat.id.toString()),
     chatType: toChatType(message.chat.type),
     text,
-    from: toParticipant(message.from),
+    from,
     messageThreadId: message.message_thread_id,
     chatTitle: message.chat.title
   }

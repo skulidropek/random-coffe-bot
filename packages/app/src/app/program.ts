@@ -5,7 +5,8 @@ import type { BotState, ChatState } from "../core/domain.js"
 import { decideSchedule } from "../core/schedule.js"
 import { applyUpdates } from "../core/updates.js"
 import { type Config, loadConfig } from "../shell/config.js"
-import { makeStateStore, StateStore, type StateStoreError, type StateStoreShape } from "../shell/state-store.js"
+import { DrizzleService, makeDrizzleService } from "../shell/drizzle.js"
+import { makeStateStore, StateStore, StateStoreError, type StateStoreShape } from "../shell/state-store.js"
 import {
   makeTelegramService,
   type TelegramError,
@@ -143,17 +144,30 @@ const loop = (
 export const program = pipe(
   loadConfig,
   Effect.flatMap((config) =>
-    pipe(
-      Effect.sync(() => Date.now()),
-      Effect.map((now) => RngSeed(now % 2_147_483_647)),
-      Effect.flatMap((seed) => makeStateStore(config.statePath, seed)),
-      Effect.flatMap((stateStore) => {
-        const telegramService = makeTelegramService(config.token)
-        return loop(config).pipe(
-          Effect.provideService(StateStore, stateStore),
-          Effect.provideService(TelegramService, telegramService)
+    Effect.scoped(
+      pipe(
+        Effect.sync(() => Date.now()),
+        Effect.map((now) => RngSeed(now % 2_147_483_647)),
+        Effect.flatMap((seed) =>
+          pipe(
+            makeDrizzleService(config.databaseUrl),
+            Effect.mapError((error) => new StateStoreError({ message: error.message })),
+            Effect.flatMap((drizzleService) =>
+              pipe(
+                makeStateStore(seed),
+                Effect.provideService(DrizzleService, drizzleService),
+                Effect.flatMap((stateStore) => {
+                  const telegramService = makeTelegramService(config.token)
+                  return loop(config).pipe(
+                    Effect.provideService(StateStore, stateStore),
+                    Effect.provideService(TelegramService, telegramService)
+                  )
+                })
+              )
+            )
+          )
         )
-      })
+      )
     )
   )
 )

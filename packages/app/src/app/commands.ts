@@ -130,6 +130,7 @@ type NextPollContext = {
   readonly chat: BotState["chats"][string]
   readonly pollWindow: ReturnType<typeof nextPollWindow>
   readonly telegram: TelegramServiceShape
+  readonly replyThreadId?: number | undefined
 }
 
 const formatDays = (days: number): string => (days === 1 ? "1 day" : `${days} days`)
@@ -153,7 +154,7 @@ const handleNextPoll = (
     context.telegram.sendMessage(
       context.chatId,
       text,
-      context.chat.threadId ?? undefined
+      context.replyThreadId ?? context.chat.threadId ?? undefined
     ),
     Effect.as(context.state)
   )
@@ -196,7 +197,8 @@ const dispatchCommand = (
         chatId: context.chatId,
         chat: context.chat,
         pollWindow: context.pollWindow,
-        telegram: context.telegram
+        telegram: context.telegram,
+        replyThreadId: context.messageThreadId
       })),
     Match.exhaustive
   )

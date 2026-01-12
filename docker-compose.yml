@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: coffee
+      POSTGRES_PASSWORD: coffee
+      POSTGRES_DB: coffee_bot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coffee -d coffee_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: node:20-alpine
+    working_dir: /workspace
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      BOT_DATABASE_URL: postgres://coffee:coffee@db:5432/coffee_bot
+      CI: "true"
+    volumes:
+      - ./:/workspace
+    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm -C packages/app start"
+
+volumes:
+  postgres_data:

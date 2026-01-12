@@ -1,7 +1,5 @@
 import * as S from "@effect/schema/Schema"
 import { Context, Data, Effect, pipe, Ref } from "effect"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
-import path from "node:path"
 
 import { ChatId, LocalDateString, MessageId, PairKey, PollId, RngSeed, UserId } from "../core/brand.js"
 import type {
@@ -16,10 +14,40 @@ import type {
 } from "../core/domain.js"
 import { emptyState } from "../core/domain.js"
 import { listParticipants, upsertParticipant } from "../core/participants.js"
+import { DrizzleService, type DrizzleServiceShape } from "./drizzle.js"
+import { makeDbRunner, makeStateDb } from "./state-store-db.js"
 
 export class StateStoreError extends Data.TaggedError("StateStoreError")<{
   readonly message: string
 }> {}
+
+const formatCause = (cause: Error["cause"]): string | null => {
+  if (cause instanceof Error) {
+    return cause.message
+  }
+  if (typeof cause === "string") {
+    return cause
+  }
+  if (typeof cause === "number" || typeof cause === "boolean" || typeof cause === "bigint") {
+    return `${cause}`
+  }
+  if (cause === null) {
+    return "null"
+  }
+  if (cause === undefined) {
+    return null
+  }
+  return "unknown"
+}
+
+const formatErrorMessage = (error: Error | string): string => {
+  if (typeof error === "string") {
+    return error
+  }
+  const base = error.message
+  const causeMessage = formatCause(error.cause)
+  return causeMessage ? `${base}; cause: ${causeMessage}` : base
+}
 
 const participantSchema = S.Struct({
   id: S.Number,
@@ -101,7 +129,7 @@ const toStoreError = (
   error instanceof StateStoreError
     ? error
     : new StateStoreError({
-      message: error instanceof Error ? error.message : error
+      message: formatErrorMessage(error)
     })
 
 const toParticipant = (wire: ParticipantWire): Participant => ({
@@ -269,73 +297,56 @@ const decodeState = (payload: string): Effect.Effect<BotState, StateStoreError> 
     Effect.mapError((error) => toStoreError(error instanceof Error ? error : String(error)))
   )
 
-const readStateFile = (filePath: string): Effect.Effect<BotState, StateStoreError> =>
-  pipe(
-    Effect.tryPromise({
-      try: () => readFile(filePath, "utf8"),
-      catch: (error) => toStoreError(error instanceof Error ? error : String(error))
-    }),
-    Effect.flatMap((payload) => decodeState(payload))
-  )
+const runDb = makeDbRunner((error) => toStoreError(error))
 
-const ensureDirectory = (filePath: string): Effect.Effect<void, StateStoreError> =>
-  pipe(
-    Effect.tryPromise({
-      try: () => mkdir(path.dirname(filePath), { recursive: true }),
-      catch: (error) => toStoreError(error instanceof Error ? error : String(error))
-    }),
-    Effect.asVoid
-  )
+const { loadStatePayload, persistStatePayload, runMigrations } = makeStateDb(runDb)
 
-const writeStateFile = (
-  filePath: string,
+const persistState = (
+  db: DrizzleServiceShape["db"],
   state: BotState
-): Effect.Effect<void, StateStoreError> =>
+): Effect.Effect<void, StateStoreError> => persistStatePayload(db, JSON.stringify(toWireState(state)))
+
+const loadOrInitState = (
+  db: DrizzleServiceShape["db"],
+  initialSeed: RngSeed
+): Effect.Effect<BotState, StateStoreError> =>
   pipe(
-    Effect.tryPromise({
-      try: () =>
-        writeFile(
-          filePath,
-          JSON.stringify(toWireState(state), null, 2),
-          "utf8"
-        ),
-      catch: (error) => toStoreError(error instanceof Error ? error : String(error))
-    }),
-    Effect.asVoid
+    loadStatePayload(db),
+    Effect.flatMap((payload) =>
+      payload
+        ? decodeState(payload)
+        : pipe(
+          Effect.succeed(emptyState(initialSeed)),
+          Effect.tap((state) => persistState(db, state))
+        )
+    )
   )
 
-const isMissingFile = (error: StateStoreError): boolean => error.message.includes("ENOENT")
-
-// CHANGE: load and persist bot state to the filesystem
-// WHY: keep weekly pairing history stable across restarts
-// QUOTE(TZ): "Что бы меньше попадались те кто уже был"
-// REF: user-2026-01-09-random-coffee
+// CHANGE: load and persist bot state via ORM-backed Postgres storage
+// WHY: keep weekly pairing history stable across restarts without filesystem state
+// QUOTE(TZ): "А ты можешь не писать SQL код а использовать ORM?"
+// REF: user-2026-01-12-orm
 // SOURCE: n/a
 // FORMAT THEOREM: forall s: save(load(s)) = s
 // PURITY: SHELL
-// EFFECT: Effect<StateStoreShape, StateStoreError, never>
+// EFFECT: Effect<StateStoreShape, StateStoreError, DrizzleService>
 // INVARIANT: state is schema-validated before use
 // COMPLEXITY: O(n)/O(n)
 export const makeStateStore = (
-  statePath: string,
   initialSeed: RngSeed
-): Effect.Effect<StateStoreShape, StateStoreError> =>
-  pipe(
-    Effect.catchAll(readStateFile(statePath), (error) =>
-      isMissingFile(error)
-        ? Effect.succeed(emptyState(initialSeed))
-        : Effect.fail(error)),
-    Effect.flatMap((state) =>
-      Ref.make(state).pipe(
-        Effect.map((ref) => ({
-          get: Ref.get(ref),
-          set: (next: BotState) =>
-            pipe(
-              Ref.set(ref, next),
-              Effect.zipRight(ensureDirectory(statePath)),
-              Effect.zipRight(writeStateFile(statePath, next))
-            )
-        }))
-      )
-    )
-  )
+): Effect.Effect<StateStoreShape, StateStoreError, DrizzleService> =>
+  Effect.gen(function*(_) {
+    const dbService = yield* _(DrizzleService)
+    const db = dbService.db
+    yield* _(runMigrations(db))
+    const state = yield* _(loadOrInitState(db, initialSeed))
+    const ref = yield* _(Ref.make(state))
+    return {
+      get: Ref.get(ref),
+      set: (next: BotState) =>
+        pipe(
+          Ref.set(ref, next),
+          Effect.zipRight(persistState(db, next))
+        )
+    }
+  })

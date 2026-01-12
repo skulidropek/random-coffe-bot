@@ -12,9 +12,7 @@ export class ConfigError extends Data.TaggedError("ConfigError")<{
 const envSchema = S.Struct({
   BOT_TOKEN: S.NonEmptyString,
   BOT_TIMEZONE: S.optionalWith(S.NonEmptyString, { default: () => "UTC" }),
-  BOT_STATE_PATH: S.optionalWith(S.NonEmptyString, {
-    default: () => "./data/state.json"
-  })
+  BOT_DATABASE_URL: S.NonEmptyString
 })
 
 type Env = S.Schema.Type<typeof envSchema>
@@ -22,7 +20,7 @@ type Env = S.Schema.Type<typeof envSchema>
 export type Config = {
   readonly token: string
   readonly timeZone: string
-  readonly statePath: string
+  readonly databaseUrl: string
 }
 
 // CHANGE: decode bot configuration from environment variables
@@ -74,7 +72,7 @@ export const loadConfig = pipe(
   Effect.map((env: Env): Config => ({
     token: env.BOT_TOKEN,
     timeZone: env.BOT_TIMEZONE,
-    statePath: env.BOT_STATE_PATH
+    databaseUrl: env.BOT_DATABASE_URL
   })),
   Effect.mapError((error) => new ConfigError({ message: error instanceof Error ? error.message : String(error) }))
 )
