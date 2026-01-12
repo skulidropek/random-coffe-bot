@@ -1,8 +1,8 @@
+import * as FileSystem from "@effect/platform/FileSystem"
+import * as Path from "@effect/platform/Path"
 import { eq } from "drizzle-orm"
 import { migrate } from "drizzle-orm/node-postgres/migrator"
 import { Effect, pipe } from "effect"
-import { existsSync } from "node:fs"
-import path from "node:path"
 
 import { botStateTable } from "./db/schema.js"
 import type { DrizzleDatabase } from "./drizzle.js"
@@ -19,28 +19,46 @@ export const makeDbRunner = <E>(onError: (error: Error | string) => E): DbRunner
     catch: (error) => onError(error instanceof Error ? error : String(error))
   })
 
-const resolveMigrationsFolder = (): string => {
-  const direct = path.resolve(process.cwd(), "drizzle")
+const resolveMigrationsFolder = Effect.gen(function*(_) {
+  const fs = yield* _(FileSystem.FileSystem)
+  const path = yield* _(Path.Path)
+  const cwd = process.cwd()
+  const direct = path.resolve(cwd, "drizzle")
   const directMeta = path.join(direct, "meta", "_journal.json")
-  if (existsSync(directMeta)) {
+  const directExists = yield* _(fs.exists(directMeta))
+  if (directExists) {
     return direct
   }
 
-  const nested = path.resolve(process.cwd(), "packages/app/drizzle")
+  const nested = path.resolve(cwd, "packages/app/drizzle")
   const nestedMeta = path.join(nested, "meta", "_journal.json")
-  if (existsSync(nestedMeta)) {
+  const nestedExists = yield* _(fs.exists(nestedMeta))
+  if (nestedExists) {
     return nested
   }
 
   return direct
-}
+})
 
-const migrationsFolder = resolveMigrationsFolder()
+export const makeStateDb = <E>(
+  runDb: DbRunner<E>,
+  onError: (error: Error | string) => E
+) => {
+  const toDbError = (error: Error | string): E => onError(error)
 
-export const makeStateDb = <E>(runDb: DbRunner<E>) => {
-  const runMigrations = (db: DrizzleDatabase): Effect.Effect<void, E> =>
+  const resolveMigrations = pipe(
+    resolveMigrationsFolder,
+    Effect.mapError((error) => toDbError(error instanceof Error ? error : String(error)))
+  )
+
+  const runMigrations = (
+    db: DrizzleDatabase
+  ): Effect.Effect<void, E, FileSystem.FileSystem | Path.Path> =>
     pipe(
-      runDb(() => migrate(db, { migrationsFolder })),
+      resolveMigrations,
+      Effect.flatMap((migrationsFolder) =>
+        runDb(() => migrate(db, { migrationsFolder }))
+      ),
       Effect.asVoid
     )
 

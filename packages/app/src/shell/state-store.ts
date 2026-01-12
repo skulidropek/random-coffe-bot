@@ -1,4 +1,6 @@
 import * as S from "@effect/schema/Schema"
+import type * as FileSystem from "@effect/platform/FileSystem"
+import type * as Path from "@effect/platform/Path"
 import { Context, Data, Effect, pipe, Ref } from "effect"
 
 import { ChatId, LocalDateString, MessageId, PairKey, PollId, RngSeed, UserId } from "../core/brand.js"
@@ -288,18 +290,23 @@ const decodeState = (payload: string): Effect.Effect<BotState, StateStoreError> 
   pipe(
     decodeCurrent(payload),
     Effect.map((wire) => toState(wire)),
-    Effect.catchAll(() =>
-      pipe(
-        decodeLegacy(payload),
-        Effect.map((wire) => toStateFromLegacy(wire))
-      )
-    ),
+    Effect.matchEffect({
+      onFailure: () =>
+        pipe(
+          decodeLegacy(payload),
+          Effect.map((wire) => toStateFromLegacy(wire))
+        ),
+      onSuccess: (state) => Effect.succeed(state)
+    }),
     Effect.mapError((error) => toStoreError(error instanceof Error ? error : String(error)))
   )
 
 const runDb = makeDbRunner((error) => toStoreError(error))
 
-const { loadStatePayload, persistStatePayload, runMigrations } = makeStateDb(runDb)
+const { loadStatePayload, persistStatePayload, runMigrations } = makeStateDb(
+  runDb,
+  (error) => toStoreError(error)
+)
 
 const persistState = (
   db: DrizzleServiceShape["db"],
@@ -329,12 +336,16 @@ const loadOrInitState = (
 // SOURCE: n/a
 // FORMAT THEOREM: forall s: save(load(s)) = s
 // PURITY: SHELL
-// EFFECT: Effect<StateStoreShape, StateStoreError, DrizzleService>
+// EFFECT: Effect<StateStoreShape, StateStoreError, DrizzleService | FileSystem | Path>
 // INVARIANT: state is schema-validated before use
 // COMPLEXITY: O(n)/O(n)
 export const makeStateStore = (
   initialSeed: RngSeed
-): Effect.Effect<StateStoreShape, StateStoreError, DrizzleService> =>
+): Effect.Effect<
+  StateStoreShape,
+  StateStoreError,
+  DrizzleService | FileSystem.FileSystem | Path.Path
+> =>
   Effect.gen(function*(_) {
     const dbService = yield* _(DrizzleService)
     const db = dbService.db

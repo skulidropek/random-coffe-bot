@@ -130,7 +130,10 @@ export const logAndIgnore = <E extends LoggableError, R>(
   effect: Effect.Effect<void, E, R>
 ): Effect.Effect<void, never, R> =>
   effect.pipe(
-    Effect.catchAll((error) => Effect.logError(formatError(error)))
+    Effect.matchEffect({
+      onFailure: (error) => Effect.logError(formatError(error)),
+      onSuccess: () => Effect.void
+    })
   )
 
 export const logAndFallback = <A, E extends LoggableError, R>(
@@ -138,10 +141,12 @@ export const logAndFallback = <A, E extends LoggableError, R>(
   fallback: A
 ): Effect.Effect<A, never, R> =>
   effect.pipe(
-    Effect.catchAll((error) =>
-      pipe(
-        Effect.logError(formatError(error)),
-        Effect.as(fallback)
-      )
-    )
+    Effect.matchEffect({
+      onFailure: (error) =>
+        pipe(
+          Effect.logError(formatError(error)),
+          Effect.as(fallback)
+        ),
+      onSuccess: (value) => Effect.succeed(value)
+    })
   )

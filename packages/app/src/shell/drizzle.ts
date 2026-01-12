@@ -39,7 +39,10 @@ const makePool = (databaseUrl: string) =>
           try: () => pool.end(),
           catch: (error) => toDrizzleError(error instanceof Error ? error : String(error))
         }),
-        Effect.catchAll(() => Effect.sync(() => {})),
+        Effect.matchEffect({
+          onFailure: () => Effect.sync(() => {}),
+          onSuccess: () => Effect.void
+        }),
         Effect.asVoid
       )
   )

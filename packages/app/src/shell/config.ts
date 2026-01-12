@@ -1,9 +1,8 @@
 import * as S from "@effect/schema/Schema"
+import * as FileSystem from "@effect/platform/FileSystem"
+import * as Path from "@effect/platform/Path"
 import dotenv from "dotenv"
 import { Data, Effect, pipe } from "effect"
-import { existsSync } from "node:fs"
-import path from "node:path"
-import { fileURLToPath } from "node:url"
 
 export class ConfigError extends Data.TaggedError("ConfigError")<{
   readonly message: string
@@ -23,6 +22,15 @@ export type Config = {
   readonly databaseUrl: string
 }
 
+const toConfigError = (
+  error: ConfigError | Error | string
+): ConfigError =>
+  error instanceof ConfigError
+    ? error
+    : new ConfigError({
+      message: error instanceof Error ? error.message : error
+    })
+
 // CHANGE: decode bot configuration from environment variables
 // WHY: keep boundary data validated before entering the domain
 // QUOTE(TZ): "Его добавляют в группу и он создаёт опросник раз в неделю"
@@ -30,38 +38,41 @@ export type Config = {
 // SOURCE: n/a
 // FORMAT THEOREM: forall env: decode(env) = config -> config.token != ""
 // PURITY: SHELL
-// EFFECT: Effect<Config, ConfigError, never>
+// EFFECT: Effect<Config, ConfigError, FileSystem | Path>
 // INVARIANT: timezone is always a non-empty string
 // COMPLEXITY: O(1)/O(1)
-const moduleDir = path.dirname(fileURLToPath(import.meta.url))
-
-const candidateEnvPaths = [
-  path.resolve(process.cwd(), ".env"),
-  path.resolve(process.cwd(), "../.env"),
-  path.resolve(process.cwd(), "../../.env"),
-  path.resolve(moduleDir, ".env"),
-  path.resolve(moduleDir, "../.env"),
-  path.resolve(moduleDir, "../../.env")
-]
-
-const findEnvPath = (): string | null => {
-  for (const envPath of candidateEnvPaths) {
-    if (existsSync(envPath)) {
-      return envPath
-    }
-  }
-  return null
-}
-
 const loadEnv = pipe(
-  Effect.sync(() => {
-    const envPath = findEnvPath()
-    if (envPath) {
-      dotenv.config({ path: envPath })
+  Effect.gen(function*(_) {
+    const fs = yield* _(FileSystem.FileSystem)
+    const path = yield* _(Path.Path)
+    const modulePath = yield* _(path.fromFileUrl(new URL(import.meta.url)))
+    const moduleDir = path.dirname(modulePath)
+    const cwd = process.cwd()
+    const candidateEnvPaths = [
+      path.resolve(cwd, ".env"),
+      path.resolve(cwd, "../.env"),
+      path.resolve(cwd, "../../.env"),
+      path.resolve(moduleDir, ".env"),
+      path.resolve(moduleDir, "../.env"),
+      path.resolve(moduleDir, "../../.env")
+    ]
+
+    let resolvedEnvPath: string | null = null
+    for (const envPath of candidateEnvPaths) {
+      const exists = yield* _(fs.exists(envPath))
+      if (exists) {
+        resolvedEnvPath = envPath
+        break
+      }
+    }
+
+    if (resolvedEnvPath) {
+      dotenv.config({ path: resolvedEnvPath })
     } else {
       dotenv.config()
     }
   }),
+  Effect.mapError((error) => toConfigError(error instanceof Error ? error : String(error))),
   Effect.asVoid
 )
 
@@ -74,5 +85,5 @@ export const loadConfig = pipe(
     timeZone: env.BOT_TIMEZONE,
     databaseUrl: env.BOT_DATABASE_URL
   })),
-  Effect.mapError((error) => new ConfigError({ message: error instanceof Error ? error.message : String(error) }))
+  Effect.mapError((error) => toConfigError(error instanceof Error ? error : String(error)))
 )
