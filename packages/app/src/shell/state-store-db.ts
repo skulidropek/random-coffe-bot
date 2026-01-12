@@ -40,71 +40,76 @@ const resolveMigrationsFolder = Effect.gen(function*(_) {
   return direct
 })
 
+const buildResolveMigrations = <E>(
+  onError: (error: Error | string) => E
+): Effect.Effect<string, E, FileSystem.FileSystem | Path.Path> =>
+  pipe(
+    resolveMigrationsFolder,
+    Effect.mapError((error) => onError(error instanceof Error ? error : String(error)))
+  )
+
+const makeRunMigrations = <E>(
+  runDb: DbRunner<E>,
+  resolveMigrations: Effect.Effect<string, E, FileSystem.FileSystem | Path.Path>
+) =>
+(db: DrizzleDatabase): Effect.Effect<void, E, FileSystem.FileSystem | Path.Path> =>
+  pipe(
+    resolveMigrations,
+    Effect.flatMap((migrationsFolder) => runDb(() => migrate(db, { migrationsFolder }))),
+    Effect.asVoid
+  )
+
+const makeLoadStatePayload = <E>(runDb: DbRunner<E>) =>
+(
+  db: DrizzleDatabase
+): Effect.Effect<string | null, E> =>
+  pipe(
+    runDb(() =>
+      db
+        .select({ payload: botStateTable.payload })
+        .from(botStateTable)
+        .where(eq(botStateTable.id, stateRowId))
+        .limit(1)
+    ),
+    Effect.map((rows) => {
+      const row = rows[0]
+      return row ? row.payload : null
+    })
+  )
+
+const makePersistStatePayload = <E>(runDb: DbRunner<E>) =>
+(
+  db: DrizzleDatabase,
+  payload: string
+): Effect.Effect<void, E> =>
+  pipe(
+    runDb(() =>
+      db
+        .insert(botStateTable)
+        .values({
+          id: stateRowId,
+          payload
+        })
+        .onConflictDoUpdate({
+          target: botStateTable.id,
+          set: {
+            payload,
+            updatedAt: new Date()
+          }
+        })
+    ),
+    Effect.asVoid
+  )
+
 export const makeStateDb = <E>(
   runDb: DbRunner<E>,
   onError: (error: Error | string) => E
 ) => {
-  const toDbError = (error: Error | string): E => onError(error)
-
-  const resolveMigrations = pipe(
-    resolveMigrationsFolder,
-    Effect.mapError((error) => toDbError(error instanceof Error ? error : String(error)))
-  )
-
-  const runMigrations = (
-    db: DrizzleDatabase
-  ): Effect.Effect<void, E, FileSystem.FileSystem | Path.Path> =>
-    pipe(
-      resolveMigrations,
-      Effect.flatMap((migrationsFolder) =>
-        runDb(() => migrate(db, { migrationsFolder }))
-      ),
-      Effect.asVoid
-    )
-
-  const loadStatePayload = (
-    db: DrizzleDatabase
-  ): Effect.Effect<string | null, E> =>
-    pipe(
-      runDb(() =>
-        db
-          .select({ payload: botStateTable.payload })
-          .from(botStateTable)
-          .where(eq(botStateTable.id, stateRowId))
-          .limit(1)
-      ),
-      Effect.map((rows) => {
-        const row = rows[0]
-        return row ? row.payload : null
-      })
-    )
-
-  const persistStatePayload = (
-    db: DrizzleDatabase,
-    payload: string
-  ): Effect.Effect<void, E> =>
-    pipe(
-      runDb(() =>
-        db
-          .insert(botStateTable)
-          .values({
-            id: stateRowId,
-            payload
-          })
-          .onConflictDoUpdate({
-            target: botStateTable.id,
-            set: {
-              payload,
-              updatedAt: new Date()
-            }
-          })
-      ),
-      Effect.asVoid
-    )
+  const resolveMigrations = buildResolveMigrations(onError)
 
   return {
-    runMigrations,
-    loadStatePayload,
-    persistStatePayload
+    runMigrations: makeRunMigrations(runDb, resolveMigrations),
+    loadStatePayload: makeLoadStatePayload(runDb),
+    persistStatePayload: makePersistStatePayload(runDb)
   }
 }

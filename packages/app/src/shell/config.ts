@@ -1,6 +1,6 @@
-import * as S from "@effect/schema/Schema"
 import * as FileSystem from "@effect/platform/FileSystem"
 import * as Path from "@effect/platform/Path"
+import * as S from "@effect/schema/Schema"
 import dotenv from "dotenv"
 import { Data, Effect, pipe } from "effect"
 

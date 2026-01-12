@@ -17,12 +17,4 @@ export type RngSeed = Brand<number, "RngSeed">
 export type PairKey = Brand<string, "PairKey">
 export type LocalDateString = Brand<string, "LocalDateString">
 
-export {
-  ChatId,
-  LocalDateString,
-  MessageId,
-  PairKey,
-  PollId,
-  RngSeed,
-  UserId
-} from "./axioms.js"
+export { ChatId, LocalDateString, MessageId, PairKey, PollId, RngSeed, UserId } from "./axioms.js"
