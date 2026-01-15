@@ -6,7 +6,7 @@ import { ChatId, LocalDateString, MessageId, PollId, RngSeed, UserId } from "../
 import type { BotState, ChatState } from "../../src/core/domain.js"
 import { upsertParticipant } from "../../src/core/participants.js"
 import { emptyChatState } from "../../src/core/state.js"
-import type { TelegramServiceShape } from "../../src/shell/telegram.js"
+import { TelegramApiError, type TelegramServiceShape } from "../../src/shell/telegram.js"
 import { makeStateStoreStub, makeStateWithChat, makeStateWithPoll, makeTelegramStub } from "./test-utils.js"
 
 const makeParticipant = (id: number, name: string, username: string) => ({
@@ -14,6 +14,41 @@ const makeParticipant = (id: number, name: string, username: string) => ({
   firstName: name,
   username
 })
+
+const botProfile = {
+  id: UserId(1),
+  username: "random_coffee_bot",
+  firstName: "Random",
+  lastName: "Coffee"
+}
+
+const makeSingleParticipantChat = (params: {
+  readonly chatId: ChatId
+  readonly pollId: PollId
+  readonly summaryDate: LocalDateString
+  readonly seed: RngSeed
+  readonly messageId: MessageId
+}): {
+  readonly chat: ChatState
+  readonly state: BotState
+} => {
+  const alice = makeParticipant(1, "Alice", "alice")
+  const participants = upsertParticipant({}, alice)
+  const chat = {
+    ...emptyChatState(params.seed),
+    poll: {
+      pollId: params.pollId,
+      messageId: params.messageId,
+      chatId: params.chatId,
+      summaryDate: params.summaryDate,
+      threadId: null
+    },
+    participants,
+    title: "Closed Poll Chat"
+  }
+  const state = makeStateWithPoll(params.chatId, chat, params.pollId, params.seed)
+  return { chat, state }
+}
 
 const runSummarize = (params: {
   readonly state: BotState
@@ -52,7 +87,8 @@ const makeAsyncTelegram = (
     ),
   sendMessage: () => Effect.succeed(MessageId(0)),
   stopPoll: () => Effect.void,
-  getChatMember: () => Effect.succeed("administrator")
+  getChatMember: () => Effect.succeed("administrator"),
+  getMe: Effect.succeed(botProfile)
 })
 
 describe("actions", () => {
@@ -130,26 +166,62 @@ describe("actions", () => {
       expect(Object.keys(next.pollIndex).length).toBe(0)
     }))
 
+  it.effect("summarize ignores already closed poll errors", () =>
+    Effect.gen(function*(_) {
+      const chatId = ChatId("-202")
+      const pollId = PollId("poll-closed")
+      const summaryDate = LocalDateString("2026-01-12")
+      const { chat, state } = makeSingleParticipantChat({
+        chatId,
+        pollId,
+        summaryDate,
+        seed: RngSeed(12),
+        messageId: MessageId(12)
+      })
+      const { stateStore } = makeStateStoreStub(state)
+      const telegram: TelegramServiceShape = {
+        getUpdates: () => Effect.succeed([]),
+        sendPoll: () => Effect.succeed({ pollId, messageId: MessageId(12) }),
+        sendMessage: () => Effect.succeed(MessageId(99)),
+        stopPoll: () =>
+          Effect.fail(
+            new TelegramApiError({
+              description: "Bad Request: poll has already been closed",
+              errorCode: 400,
+              method: "stopPoll"
+            })
+          ),
+        getChatMember: () => Effect.succeed("administrator"),
+        getMe: Effect.succeed(botProfile)
+      }
+
+      const next = yield* _(
+        summarize({
+          state,
+          chatId,
+          chat,
+          summaryDate,
+          telegram,
+          stateStore
+        })
+      )
+
+      expect(next.chats[chatId]?.poll).toBeNull()
+      expect(next.chats[chatId]?.lastSummaryAt).toBe(summaryDate)
+    }))
+
   it.effect("summarize mentions leftover participants when no pairs", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-201")
       const pollId = PollId("poll-2")
       const summaryDate = LocalDateString("2026-01-12")
-      const alice = makeParticipant(1, "Alice", "alice")
-      const participants = upsertParticipant({}, alice)
-      const chat = {
-        ...emptyChatState(RngSeed(11)),
-        poll: {
-          pollId,
-          messageId: MessageId(11),
-          chatId,
-          summaryDate,
-          threadId: null
-        },
-        participants,
-        title: "Coffee Club"
-      }
-      const state = makeStateWithPoll(chatId, chat, pollId, RngSeed(11))
+      const { chat, state } = makeSingleParticipantChat({
+        chatId,
+        pollId,
+        summaryDate,
+        seed: RngSeed(11),
+        messageId: MessageId(11)
+      })
       const { messageCalls, next } = yield* _(
         runSummarize({
           state,

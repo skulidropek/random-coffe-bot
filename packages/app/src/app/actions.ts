@@ -1,6 +1,6 @@
-import { Effect, pipe } from "effect"
+import { Effect, Match, pipe } from "effect"
 
-import type { ChatId, LocalDateString } from "../core/brand.js"
+import type { ChatId, LocalDateString, MessageId } from "../core/brand.js"
 import type { BotState, ChatState } from "../core/domain.js"
 import { pairParticipants } from "../core/pairing.js"
 import { listParticipants } from "../core/participants.js"
@@ -28,6 +28,42 @@ type SummarizeContext = {
   readonly telegram: TelegramServiceShape
   readonly stateStore: StateStoreShape
 }
+
+const isPollAlreadyClosed = (error: TelegramError): boolean =>
+  Match.value(error).pipe(
+    Match.when({ _tag: "TelegramApiError" }, (apiError) => {
+      if (apiError.method !== "stopPoll" || apiError.errorCode !== 400) {
+        return false
+      }
+      const message = apiError.description || apiError.message || ""
+      return message.includes("poll has already been closed")
+    }),
+    Match.when({ _tag: "TelegramNetworkError" }, () => false),
+    Match.exhaustive
+  )
+
+// CHANGE: ignore stopPoll errors for already closed polls
+// WHY: allow summaries to complete when polls are closed manually
+// QUOTE(TZ): "не может почему-то закрыть опросник"
+// REF: user-2026-01-16-stop-poll
+// SOURCE: n/a
+// FORMAT THEOREM: forall e: closed_poll(e) -> stopPollSafe(e) = void
+// PURITY: SHELL
+// EFFECT: Effect<void, TelegramError, never>
+// INVARIANT: non-closed errors still fail
+// COMPLEXITY: O(1)/O(1)
+const stopPollSafe = (
+  telegram: TelegramServiceShape,
+  chatId: ChatId,
+  messageId: MessageId
+): Effect.Effect<void, TelegramError> =>
+  telegram.stopPoll(chatId, messageId).pipe(
+    Effect.catchAll((error) =>
+      isPollAlreadyClosed(error)
+        ? Effect.void
+        : Effect.fail(error)
+    )
+  )
 
 // CHANGE: send a poll and persist state for a chat
 // WHY: reuse identical polling logic for schedule and manual commands
@@ -90,7 +126,7 @@ export const summarize = (
   )
   const threadId = context.chat.poll?.threadId ?? context.chat.threadId
   const stopPollEffect = context.chat.poll
-    ? context.telegram.stopPoll(context.chatId, context.chat.poll.messageId)
+    ? stopPollSafe(context.telegram, context.chatId, context.chat.poll.messageId)
     : Effect.void
   const nextState = applySummary(
     context.state,

@@ -1,9 +1,11 @@
 import { Effect, pipe } from "effect"
 
 import type { BotState, Participant } from "../core/domain.js"
-import { isGroupChat, normalizeCommand } from "../core/telegram-commands.js"
-import type { IncomingUpdate } from "../core/updates.js"
-import type { TelegramError, TelegramServiceShape } from "../shell/telegram.js"
+import { ensureChat, setThreadId } from "../core/state.js"
+import { isGroupChat } from "../core/telegram-commands.js"
+import type { ChatMessage, IncomingUpdate } from "../core/updates.js"
+import type { TelegramServiceShape } from "../shell/telegram.js"
+import { matchesTarget, parseCommandTarget } from "./command-utils.js"
 
 const pollWeekdays = "Polls: Friday/Saturday. Results: Monday."
 const pollPermissionHint = "Make sure the bot can send polls in this chat."
@@ -62,26 +64,81 @@ export const logState = (state: BotState): Effect.Effect<void> => {
   )
 }
 
-export const handleMessages = (
-  updates: ReadonlyArray<IncomingUpdate>,
+const isStartCommand = (text: string, botUsername?: string): boolean => {
+  const parsed = parseCommandTarget(text)
+  if (!matchesTarget(parsed.target, botUsername)) {
+    return false
+  }
+  return parsed.command === "/start" || parsed.command === "/help"
+}
+
+const updateThreadFromStart = (state: BotState, message: ChatMessage): BotState => {
+  const threadId = message.messageThreadId ?? null
+  const withChat = ensureChat(state, message.chatId)
+  const current = withChat.chats[message.chatId]
+  return current && current.threadId === threadId
+    ? withChat
+    : setThreadId(withChat, message.chatId, threadId)
+}
+
+const sendStartReply = (
+  message: ChatMessage,
   telegram: TelegramServiceShape
-): Effect.Effect<void, TelegramError> =>
+): Effect.Effect<void> => {
+  const text = [
+    "Random Coffee bot is active ✅",
+    pollWeekdays,
+    pollPermissionHint
+  ].join("\n")
+  return logAndIgnore(
+    pipe(
+      telegram.sendMessage(message.chatId, text, message.messageThreadId),
+      Effect.asVoid
+    )
+  )
+}
+
+const handleMessage = (
+  state: BotState,
+  update: IncomingUpdate,
+  telegram: TelegramServiceShape,
+  botUsername?: string
+): Effect.Effect<BotState> =>
   Effect.gen(function*(_) {
-    for (const update of updates) {
-      const message = update.message
-      if (!message || !isGroupChat(message.chatType)) {
-        continue
-      }
-      const command = normalizeCommand(message.text)
-      if (command === "/start" || command === "/help") {
-        const text = [
-          "Random Coffee bot is active ✅",
-          pollWeekdays,
-          pollPermissionHint
-        ].join("\n")
-        yield* _(telegram.sendMessage(message.chatId, text, message.messageThreadId))
-      }
+    const message = update.message
+    if (!message || !isGroupChat(message.chatType)) {
+      return state
     }
+    if (!isStartCommand(message.text, botUsername)) {
+      return state
+    }
+    const updated = updateThreadFromStart(state, message)
+    yield* _(sendStartReply(message, telegram))
+    return updated
+  })
+
+// CHANGE: keep /start topic bindings while ignoring Telegram send errors
+// WHY: persist thread affinity for /start and avoid aborting the update loop
+// QUOTE(TZ): "сохранение топиков исходя из этих команд"
+// REF: user-2026-01-15-topic-binding
+// SOURCE: n/a
+// FORMAT THEOREM: forall u: handleMessages(s,u).updateOffset = s.updateOffset
+// PURITY: SHELL
+// EFFECT: Effect<BotState, never, never>
+// INVARIANT: sendMessage failures do not escape to caller
+// COMPLEXITY: O(n)/O(1)
+export const handleMessages = (
+  state: BotState,
+  updates: ReadonlyArray<IncomingUpdate>,
+  telegram: TelegramServiceShape,
+  botUsername?: string
+): Effect.Effect<BotState> =>
+  Effect.gen(function*(_) {
+    let updated = state
+    for (const update of updates) {
+      updated = yield* _(handleMessage(updated, update, telegram, botUsername))
+    }
+    return updated
   })
 
 export type LoggableError =

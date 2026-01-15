@@ -94,6 +94,13 @@ export type ChatMemberStatus =
   | "left"
   | "kicked"
 
+export type BotProfile = {
+  readonly id: UserId
+  readonly username?: string | undefined
+  readonly firstName: string
+  readonly lastName?: string | undefined
+}
+
 export type TelegramServiceShape = {
   readonly getUpdates: (
     offset: number,
@@ -118,6 +125,7 @@ export type TelegramServiceShape = {
     chatId: ChatId,
     userId: UserId
   ) => Effect.Effect<ChatMemberStatus, TelegramError>
+  readonly getMe: Effect.Effect<BotProfile, TelegramError>
 }
 
 export class TelegramService extends Context.Tag("TelegramService")<
@@ -223,6 +231,22 @@ const makeGetChatMember = (
     Effect.map((member) => member.status)
   )
 
+const makeGetMe = (
+  bot: Bot
+): TelegramServiceShape["getMe"] =>
+  pipe(
+    Effect.tryPromise({
+      try: () => bot.api.getMe(),
+      catch: (error) => mapError(error instanceof Error ? error : String(error))
+    }),
+    Effect.map((user) => ({
+      id: UserId(user.id),
+      username: user.username,
+      firstName: user.first_name,
+      lastName: user.last_name
+    }))
+  )
+
 const makeStopPoll = (
   bot: Bot
 ): TelegramServiceShape["stopPoll"] =>
@@ -253,6 +277,7 @@ export const makeTelegramService = (token: string): TelegramServiceShape => {
     sendPoll: makeSendPoll(bot),
     sendMessage: makeSendMessage(bot),
     stopPoll: makeStopPoll(bot),
-    getChatMember: makeGetChatMember(bot)
+    getChatMember: makeGetChatMember(bot),
+    getMe: makeGetMe(bot)
   }
 }

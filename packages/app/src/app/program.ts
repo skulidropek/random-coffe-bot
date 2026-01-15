@@ -95,7 +95,8 @@ const handleDecision = (
   )
 
 const runOnce = (
-  config: Config
+  config: Config,
+  botUsername?: string
 ): Effect.Effect<void, never, StateStore | TelegramService> =>
   logAndIgnore(
     Effect.gen(function*(_) {
@@ -106,21 +107,22 @@ const runOnce = (
       yield* _(logUpdates(updates))
       const updated = applyUpdates(current, updates)
       yield* _(logState(updated))
-      yield* _(handleMessages(updates, telegram))
-      if (Object.keys(updated.chats).length === 0) {
+      const afterMessages = yield* _(handleMessages(updated, updates, telegram, botUsername))
+      if (Object.keys(afterMessages.chats).length === 0) {
         yield* _(Effect.logWarning("Нет зарегистрированных групповых чатов. Жду апдейтов из групп."))
       }
-      yield* _(stateStore.set(updated))
+      yield* _(stateStore.set(afterMessages))
       const afterCommands = yield* _(
         logAndFallback(
           handleCommands({
-            state: updated,
+            state: afterMessages,
             updates,
             telegram,
             stateStore,
-            timeZone: config.timeZone
+            timeZone: config.timeZone,
+            botUsername
           }),
-          updated
+          afterMessages
         )
       )
       yield* _(handleDecision(config, afterCommands))
@@ -128,8 +130,49 @@ const runOnce = (
   )
 
 const loop = (
+  config: Config,
+  botUsername?: string
+): Effect.Effect<void, never, StateStore | TelegramService> =>
+  pipe(runOnce(config, botUsername), Effect.forever, Effect.asVoid)
+
+const resolveBotUsername = (
+  telegram: TelegramServiceShape
+): Effect.Effect<string | undefined> =>
+  pipe(
+    telegram.getMe,
+    Effect.map((profile) => profile.username ?? undefined),
+    Effect.catchAll(() => Effect.sync((): string | undefined => undefined))
+  )
+
+const buildRuntime = (
   config: Config
-): Effect.Effect<void, never, StateStore | TelegramService> => pipe(runOnce(config), Effect.forever, Effect.asVoid)
+) =>
+  Effect.scoped(
+    Effect.gen(function*(_) {
+      const now = yield* _(Effect.sync(() => Date.now()))
+      const seed = RngSeed(now % 2_147_483_647)
+      const drizzleService = yield* _(
+        pipe(
+          makeDrizzleService(config.databaseUrl),
+          Effect.mapError((error) => new StateStoreError({ message: error.message }))
+        )
+      )
+      const stateStore = yield* _(
+        pipe(
+          makeStateStore(seed),
+          Effect.provideService(DrizzleService, drizzleService)
+        )
+      )
+      const telegramService = makeTelegramService(config.token)
+      const botUsername = yield* _(resolveBotUsername(telegramService))
+      yield* _(
+        loop(config, botUsername).pipe(
+          Effect.provideService(StateStore, stateStore),
+          Effect.provideService(TelegramService, telegramService)
+        )
+      )
+    })
+  )
 
 // CHANGE: compose the bot runtime program with Effect services
 // WHY: run the scheduler, update loop, and state persistence through typed effects
@@ -143,31 +186,5 @@ const loop = (
 // COMPLEXITY: O(n)/O(n)
 export const program = pipe(
   loadConfig,
-  Effect.flatMap((config) =>
-    Effect.scoped(
-      pipe(
-        Effect.sync(() => Date.now()),
-        Effect.map((now) => RngSeed(now % 2_147_483_647)),
-        Effect.flatMap((seed) =>
-          pipe(
-            makeDrizzleService(config.databaseUrl),
-            Effect.mapError((error) => new StateStoreError({ message: error.message })),
-            Effect.flatMap((drizzleService) =>
-              pipe(
-                makeStateStore(seed),
-                Effect.provideService(DrizzleService, drizzleService),
-                Effect.flatMap((stateStore) => {
-                  const telegramService = makeTelegramService(config.token)
-                  return loop(config).pipe(
-                    Effect.provideService(StateStore, stateStore),
-                    Effect.provideService(TelegramService, telegramService)
-                  )
-                })
-              )
-            )
-          )
-        )
-      )
-    )
-  )
+  Effect.flatMap((config) => buildRuntime(config))
 )

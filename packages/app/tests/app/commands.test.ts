@@ -2,52 +2,35 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
 
 import { handleCommands } from "../../src/app/commands.js"
-import { ChatId, LocalDateString, MessageId, PollId, RngSeed, UserId } from "../../src/core/brand.js"
-import type { BotState, ChatType, Participant } from "../../src/core/domain.js"
+import { ChatId, LocalDateString, MessageId, PollId, RngSeed } from "../../src/core/brand.js"
+import type { BotState } from "../../src/core/domain.js"
 import { emptyState } from "../../src/core/domain.js"
 import { upsertParticipant } from "../../src/core/participants.js"
 import { emptyChatState } from "../../src/core/state.js"
 import type { IncomingUpdate } from "../../src/core/updates.js"
 import type { ChatMemberStatus } from "../../src/shell/telegram.js"
-import { makeStateStoreStub, makeStateWithPoll, makeTelegramStub } from "./test-utils.js"
-
-const makeParticipant = (id: number, name: string): Participant => ({
-  id: UserId(id),
-  firstName: name
-})
-
-const makeMessageUpdate = (params: {
-  readonly updateId: number
-  readonly chatId: ChatId
-  readonly text: string
-  readonly from: Participant
-  readonly threadId?: number | undefined
-  readonly chatTitle?: string | undefined
-  readonly chatType?: ChatType | undefined
-}): IncomingUpdate => ({
-  updateId: params.updateId,
-  message: {
-    chatId: params.chatId,
-    chatType: params.chatType ?? "supergroup",
-    text: params.text,
-    from: params.from,
-    messageThreadId: params.threadId,
-    chatTitle: params.chatTitle
-  }
-})
+import {
+  makeMessageUpdate,
+  makeParticipant,
+  makeStateStoreStub,
+  makeStateWithPoll,
+  makeTelegramStub
+} from "./test-utils.js"
 
 const runCommands = (params: {
   readonly state: BotState
   readonly updates: ReadonlyArray<IncomingUpdate>
   readonly telegram: ReturnType<typeof makeTelegramStub>["telegram"]
   readonly stateStore: ReturnType<typeof makeStateStoreStub>["stateStore"]
+  readonly botUsername?: string | undefined
 }) =>
   handleCommands({
     state: params.state,
     updates: params.updates,
     telegram: params.telegram,
     stateStore: params.stateStore,
-    timeZone: "UTC"
+    timeZone: "UTC",
+    botUsername: params.botUsername
   })
 
 const runWithStubs = (params: {
@@ -55,12 +38,16 @@ const runWithStubs = (params: {
   readonly update: IncomingUpdate
   readonly memberStatus?: ChatMemberStatus
   readonly pollResult?: { readonly pollId: PollId; readonly messageId: MessageId }
+  readonly botUsername?: string | undefined
 }) =>
   Effect.gen(function*(_) {
     const options = params.pollResult
       ? { pollResult: params.pollResult }
       : undefined
-    const { messageCalls, pollCalls, setMemberStatus, telegram } = makeTelegramStub(options)
+    const { messageCalls, pollCalls, setMemberStatus, telegram } = makeTelegramStub({
+      ...options,
+      botUsername: params.botUsername
+    })
     if (params.memberStatus) {
       setMemberStatus(params.memberStatus)
     }
@@ -70,7 +57,8 @@ const runWithStubs = (params: {
         state: params.state,
         updates: [params.update],
         telegram,
-        stateStore
+        stateStore,
+        botUsername: params.botUsername
       })
     )
     return { next, messageCalls, pollCalls }
@@ -122,6 +110,49 @@ describe("commands", () => {
       expect(next.chats[chatId]?.poll).not.toBeNull()
     }))
 
+  it.effect("/poll stores thread id from the command topic", () =>
+    Effect.gen(function*(_) {
+      const chatId = ChatId("-401")
+      const user = makeParticipant(2, "Admin")
+      const update = makeMessageUpdate({
+        updateId: 7,
+        chatId,
+        text: "/poll",
+        from: user,
+        threadId: 321
+      })
+      const base = emptyState(RngSeed(7))
+      const { next, pollCalls } = yield* _(
+        runWithStubs({
+          state: base,
+          update
+        })
+      )
+      expect(pollCalls[0]?.threadId).toBe(321)
+      expect(next.chats[chatId]?.threadId).toBe(321)
+      expect(next.chats[chatId]?.poll?.threadId).toBe(321)
+    }))
+  it.effect("/poll ignores commands addressed to another bot", () =>
+    Effect.gen(function*(_) {
+      const chatId = ChatId("-402")
+      const user = makeParticipant(2, "Admin")
+      const update = makeMessageUpdate({
+        updateId: 8,
+        chatId,
+        text: "/poll@other_bot",
+        from: user
+      })
+      const base = emptyState(RngSeed(8))
+      const { next, pollCalls } = yield* _(
+        runWithStubs({
+          state: base,
+          update,
+          botUsername: "rustgpt_bot"
+        })
+      )
+      expect(pollCalls.length).toBe(0)
+      expect(next.chats[chatId]).toBeUndefined()
+    }))
   it.effect("/summary denies non-admin users", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-500")
@@ -152,12 +183,10 @@ describe("commands", () => {
           memberStatus: "member"
         })
       )
-
       expect(messageCalls[0]?.text).toBe("This command is available to chat admins only.")
       expect(next.chats[chatId]?.poll?.pollId).toBe(pollId)
       expect(next.chats[chatId]?.lastSummaryAt).toBeNull()
     }))
-
   it.effect("/summary clears poll and records summary date for admins", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-600")
@@ -229,12 +258,10 @@ describe("commands", () => {
           update
         })
       )
-
       expect(pollCalls.length).toBe(0)
       expect(messageCalls[0]?.text).toBe("A poll is already active. Use /summary to close it.")
       expect(next.chats[chatId]?.poll?.pollId).toBe(pollId)
     }))
-
   it.effect("/nextpoll responds even for non-admin users", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-701")
@@ -265,7 +292,6 @@ describe("commands", () => {
           memberStatus: "member"
         })
       )
-
       expect(pollCalls.length).toBe(0)
       expect(messageCalls[0]?.text).toBe("A poll is already active. Results on 2026-01-12.")
     }))

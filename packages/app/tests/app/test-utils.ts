@@ -1,9 +1,10 @@
 import { Effect } from "effect"
 
-import { MessageId, PollId } from "../../src/core/brand.js"
-import type { ChatId, PollId as PollIdType, RngSeed, UserId } from "../../src/core/brand.js"
-import type { BotState, ChatState } from "../../src/core/domain.js"
+import { MessageId, PollId, UserId } from "../../src/core/brand.js"
+import type { ChatId, PollId as PollIdType, RngSeed } from "../../src/core/brand.js"
+import type { BotState, ChatState, ChatType, Participant } from "../../src/core/domain.js"
 import { emptyState } from "../../src/core/domain.js"
+import type { IncomingUpdate } from "../../src/core/updates.js"
 import type { StateStoreShape } from "../../src/shell/state-store.js"
 import type { ChatMemberStatus, TelegramServiceShape } from "../../src/shell/telegram.js"
 
@@ -33,6 +34,7 @@ export type MemberCall = {
 export const makeTelegramStub = (options?: {
   readonly memberStatus?: ChatMemberStatus
   readonly pollResult?: { readonly pollId: PollId; readonly messageId: MessageId }
+  readonly botUsername?: string | undefined
 }) => {
   const pollCalls: Array<PollCall> = []
   const messageCalls: Array<MessageCall> = []
@@ -43,6 +45,7 @@ export const makeTelegramStub = (options?: {
     messageId: MessageId(100)
   }
   let memberStatus: ChatMemberStatus = options?.memberStatus ?? "administrator"
+  const botUsername = options?.botUsername ?? "random_coffee_bot"
 
   const telegram: TelegramServiceShape = {
     getUpdates: () => Effect.succeed([]),
@@ -69,7 +72,13 @@ export const makeTelegramStub = (options?: {
       Effect.sync(() => {
         memberCalls.push({ chatId, userId })
         return memberStatus
-      })
+      }),
+    getMe: Effect.sync(() => ({
+      id: UserId(1),
+      username: botUsername,
+      firstName: "Random",
+      lastName: "Coffee"
+    }))
   }
 
   const setMemberStatus = (status: ChatMemberStatus): void => {
@@ -126,5 +135,30 @@ export const makeStateWithPoll = (
   ...makeStateWithChat(chatId, chat, seed),
   pollIndex: {
     [pollId]: chatId
+  }
+})
+
+export const makeParticipant = (id: number, name: string): Participant => ({
+  id: UserId(id),
+  firstName: name
+})
+
+export const makeMessageUpdate = (params: {
+  readonly updateId: number
+  readonly chatId: ChatId
+  readonly text: string
+  readonly from: Participant
+  readonly threadId?: number | undefined
+  readonly chatTitle?: string | undefined
+  readonly chatType?: ChatType | undefined
+}): IncomingUpdate => ({
+  updateId: params.updateId,
+  message: {
+    chatId: params.chatId,
+    chatType: params.chatType ?? "supergroup",
+    text: params.text,
+    from: params.from,
+    messageThreadId: params.threadId,
+    chatTitle: params.chatTitle
   }
 })

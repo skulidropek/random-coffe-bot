@@ -1,15 +1,15 @@
 import { Effect, Match, pipe } from "effect"
 
-import type { ChatId, UserId } from "../core/brand.js"
+import type { ChatId } from "../core/brand.js"
 import type { BotState } from "../core/domain.js"
 import { formatLocalDate, nextPollWindow, summaryDateForPoll } from "../core/schedule.js"
 import { ensureChat, setThreadId } from "../core/state.js"
-import { isGroupChat, normalizeCommand } from "../core/telegram-commands.js"
 import type { IncomingUpdate } from "../core/updates.js"
 import type { StateStoreError, StateStoreShape } from "../shell/state-store.js"
-import type { ChatMemberStatus, TelegramError, TelegramServiceShape } from "../shell/telegram.js"
+import type { TelegramError, TelegramServiceShape } from "../shell/telegram.js"
 import { getZonedDate, type TimeError } from "../shell/time.js"
 import { createPoll, summarize } from "./actions.js"
+import { allowCommand, type Command, toCommandEnvelope } from "./command-utils.js"
 
 type CommandContext = {
   readonly state: BotState
@@ -17,56 +17,8 @@ type CommandContext = {
   readonly telegram: TelegramServiceShape
   readonly stateStore: StateStoreShape
   readonly timeZone: string
+  readonly botUsername?: string | undefined
 }
-
-type Command = "/settopic" | "/poll" | "/summary" | "/nextpoll"
-
-const parseCommand = (text: string): Command | null => {
-  const command = normalizeCommand(text)
-  return command === "/settopic" ||
-      command === "/poll" ||
-      command === "/summary" ||
-      command === "/nextpoll"
-    ? command
-    : null
-}
-
-const isAdmin = (status: ChatMemberStatus): boolean => status === "creator" || status === "administrator"
-
-const requiresAdmin = (command: Command): boolean => command !== "/nextpoll"
-
-const adminOnly = (
-  telegram: TelegramServiceShape,
-  chatId: ChatId,
-  userId: UserId,
-  threadId?: number
-): Effect.Effect<boolean, TelegramError> =>
-  pipe(
-    telegram.getChatMember(chatId, userId),
-    Effect.flatMap((status) =>
-      isAdmin(status)
-        ? Effect.succeed(true)
-        : pipe(
-          telegram.sendMessage(
-            chatId,
-            "This command is available to chat admins only.",
-            threadId
-          ),
-          Effect.as(false)
-        )
-    )
-  )
-
-const allowCommand = (
-  command: Command,
-  telegram: TelegramServiceShape,
-  chatId: ChatId,
-  userId: UserId,
-  threadId?: number
-): Effect.Effect<boolean, TelegramError> =>
-  requiresAdmin(command)
-    ? adminOnly(telegram, chatId, userId, threadId)
-    : Effect.succeed(true)
 
 const setTopic = (
   state: BotState,
@@ -85,6 +37,33 @@ const setTopic = (
     Effect.as(nextState)
   )
 }
+
+// CHANGE: persist a thread id derived from a command message
+// WHY: keep polls aligned with the topic where /poll was issued
+// QUOTE(TZ): "сохранение топиков исходя из этих команд"
+// REF: user-2026-01-15-topic-binding
+// SOURCE: n/a
+// FORMAT THEOREM: forall s,id,t: setThread(s,id,t).chats[id].threadId = t
+// PURITY: SHELL
+// EFFECT: Effect<BotState, StateStoreError, never>
+// INVARIANT: no persistence occurs when thread id is unchanged
+// COMPLEXITY: O(1)/O(1)
+const persistThreadId = (
+  state: BotState,
+  chatId: ChatId,
+  threadId: number | null,
+  stateStore: StateStoreShape
+): Effect.Effect<BotState, StateStoreError> =>
+  Effect.gen(function*(_) {
+    const withChat = ensureChat(state, chatId)
+    const current = withChat.chats[chatId]
+    if (!current || current.threadId === threadId) {
+      return withChat
+    }
+    const nextState = setThreadId(withChat, chatId, threadId)
+    yield* _(stateStore.set(nextState))
+    return nextState
+  })
 
 type PollContext = Parameters<typeof createPoll>[0]
 
@@ -206,40 +185,41 @@ const dispatchCommand = (
 type CommandUpdateContext = DispatchContext & {
   readonly state: BotState
   readonly update: IncomingUpdate
+  readonly botUsername?: string | undefined
 }
 
 const handleCommandUpdate = (
   context: CommandUpdateContext
 ): Effect.Effect<BotState, TelegramError | StateStoreError> =>
   Effect.gen(function*(_) {
-    const message = context.update.message
-    if (!message || !isGroupChat(message.chatType)) {
+    const envelope = toCommandEnvelope(context.update, context.botUsername)
+    if (!envelope) {
       return context.state
     }
-    const actor = message.from
-    if (!actor) {
-      return context.state
-    }
-    const command = parseCommand(message.text)
-    if (!command) {
-      return context.state
-    }
-    const chatId = message.chatId
-    const threadId = message.messageThreadId ?? undefined
+    const chatId = envelope.chatId
     const allowed = yield* _(
-      allowCommand(command, context.telegram, chatId, actor.id, threadId)
+      allowCommand(
+        envelope.command,
+        context.telegram,
+        chatId,
+        envelope.actorId,
+        envelope.replyThreadId
+      )
     )
     if (!allowed) {
       return context.state
     }
     const withChat = ensureChat(context.state, chatId)
-    const chat = withChat.chats[chatId]
+    const withThread = envelope.command === "/poll"
+      ? yield* _(persistThreadId(withChat, chatId, envelope.threadId, context.stateStore))
+      : withChat
+    const chat = withThread.chats[chatId]
     if (!chat) {
-      return withChat
+      return withThread
     }
     return yield* _(
-      dispatchCommand(command, {
-        state: withChat,
+      dispatchCommand(envelope.command, {
+        state: withThread,
         chatId,
         chat,
         pollSummaryDate: context.pollSummaryDate,
@@ -247,8 +227,8 @@ const handleCommandUpdate = (
         pollWindow: context.pollWindow,
         telegram: context.telegram,
         stateStore: context.stateStore,
-        threadId,
-        messageThreadId: message.messageThreadId
+        threadId: envelope.replyThreadId,
+        messageThreadId: envelope.messageThreadId
       })
     )
   })
@@ -283,7 +263,8 @@ export const handleCommands = (
           today,
           pollWindow,
           telegram: context.telegram,
-          stateStore: context.stateStore
+          stateStore: context.stateStore,
+          botUsername: context.botUsername
         })
       )
     }
