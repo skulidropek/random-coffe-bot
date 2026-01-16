@@ -4,12 +4,19 @@ import type { ChatId, LocalDateString, MessageId } from "../core/brand.js"
 import type { BotState, ChatState } from "../core/domain.js"
 import { pairParticipants } from "../core/pairing.js"
 import { listParticipants } from "../core/participants.js"
-import { applySummary, startPoll } from "../core/state.js"
-import { formatPollQuestion, formatSummary } from "../core/text.js"
+import { applySummary, finishPoll, startPoll } from "../core/state.js"
+import {
+  formatPollClosedNoResults,
+  formatPollQuestion,
+  formatSummary,
+  logPollAlreadyClosed,
+  logPollCreated,
+  logSummaryPairsSent,
+  pollOptions,
+  stopPollClosedMessageFragments
+} from "../core/text.js"
 import type { StateStoreError, StateStoreShape } from "../shell/state-store.js"
 import type { TelegramError, TelegramServiceShape } from "../shell/telegram.js"
-
-const pollOptions = ["Yes! 🤗", "Not this time 💁🏽‍♂️"]
 
 type CreatePollContext = {
   readonly state: BotState
@@ -29,6 +36,13 @@ type SummarizeContext = {
   readonly stateStore: StateStoreShape
 }
 
+type StopPollOutcome = "stopped" | "alreadyClosed"
+
+const isPollAlreadyClosedMessage = (message: string): boolean => {
+  const normalized = message.toLowerCase()
+  return stopPollClosedMessageFragments.some((fragment) => normalized.includes(fragment))
+}
+
 const isPollAlreadyClosed = (error: TelegramError): boolean =>
   Match.value(error).pipe(
     Match.when({ _tag: "TelegramApiError" }, (apiError) => {
@@ -36,33 +50,88 @@ const isPollAlreadyClosed = (error: TelegramError): boolean =>
         return false
       }
       const message = apiError.description || apiError.message || ""
-      return message.includes("poll has already been closed")
+      return isPollAlreadyClosedMessage(message)
     }),
     Match.when({ _tag: "TelegramNetworkError" }, () => false),
     Match.exhaustive
   )
 
-// CHANGE: ignore stopPoll errors for already closed polls
-// WHY: allow summaries to complete when polls are closed manually
+// CHANGE: return an outcome when stopping a poll fails with a closed poll message
+// WHY: allow manual summaries to proceed with a no-results notice
 // QUOTE(TZ): "не может почему-то закрыть опросник"
 // REF: user-2026-01-16-stop-poll
 // SOURCE: n/a
-// FORMAT THEOREM: forall e: closed_poll(e) -> stopPollSafe(e) = void
+// FORMAT THEOREM: forall e: closed_poll(e) -> stopPollSafe(e) = alreadyClosed
 // PURITY: SHELL
-// EFFECT: Effect<void, TelegramError, never>
-// INVARIANT: non-closed errors still fail
+// EFFECT: Effect<StopPollOutcome, TelegramError, never>
+// INVARIANT: non-closed errors still fail, closed errors become alreadyClosed
 // COMPLEXITY: O(1)/O(1)
 const stopPollSafe = (
   telegram: TelegramServiceShape,
   chatId: ChatId,
   messageId: MessageId
-): Effect.Effect<void, TelegramError> =>
+): Effect.Effect<StopPollOutcome, TelegramError> =>
   telegram.stopPoll(chatId, messageId).pipe(
+    Effect.as<StopPollOutcome>("stopped"),
     Effect.catchAll((error) =>
       isPollAlreadyClosed(error)
-        ? Effect.void
+        ? Effect.succeed<StopPollOutcome>("alreadyClosed")
         : Effect.fail(error)
     )
+  )
+
+const buildStopPollEffect = (
+  context: SummarizeContext
+): Effect.Effect<StopPollOutcome, TelegramError> =>
+  context.chat.poll
+    ? stopPollSafe(context.telegram, context.chatId, context.chat.poll.messageId)
+    : Effect.succeed<StopPollOutcome>("stopped")
+
+const buildSummaryState = (
+  context: SummarizeContext,
+  pairing: ReturnType<typeof pairParticipants>
+): BotState =>
+  applySummary(
+    context.state,
+    context.chatId,
+    pairing.pairs,
+    pairing.seed,
+    context.summaryDate
+  )
+
+const buildClosedState = (context: SummarizeContext): BotState => finishPoll(context.state, context.chatId)
+
+const sendClosedNotice = (
+  context: SummarizeContext,
+  threadId: number | null | undefined,
+  closedState: BotState
+): Effect.Effect<BotState, TelegramError | StateStoreError> =>
+  pipe(
+    context.telegram.sendMessage(
+      context.chatId,
+      formatPollClosedNoResults(),
+      threadId ?? undefined
+    ),
+    Effect.flatMap(() => context.stateStore.set(closedState)),
+    Effect.tap(() => Effect.logInfo(logPollAlreadyClosed(context.chatId))),
+    Effect.as(closedState)
+  )
+
+const buildSummaryMessage = (
+  context: SummarizeContext,
+  threadId: number | null | undefined,
+  pairing: ReturnType<typeof pairParticipants>,
+  nextState: BotState
+): Effect.Effect<BotState, TelegramError | StateStoreError> =>
+  pipe(
+    context.telegram.sendMessage(
+      context.chatId,
+      formatSummary(context.chat.title, pairing.pairs, pairing.leftovers),
+      threadId ?? undefined
+    ),
+    Effect.flatMap(() => context.stateStore.set(nextState)),
+    Effect.tap(() => Effect.logInfo(logSummaryPairsSent(context.chatId))),
+    Effect.as(nextState)
   )
 
 // CHANGE: send a poll and persist state for a chat
@@ -98,11 +167,7 @@ export const createPoll = (
         Effect.as(nextState)
       )
     }),
-    Effect.tap(() =>
-      Effect.logInfo(
-        `Опрос создан для чата ${context.chatId} на дату итогов ${context.summaryDate}`
-      )
-    )
+    Effect.tap(() => Effect.logInfo(logPollCreated(context.chatId, context.summaryDate)))
   )
 
 // CHANGE: send the pairing summary and persist updated history
@@ -110,10 +175,10 @@ export const createPoll = (
 // QUOTE(TZ): "Подвести итоги опросника"
 // REF: user-2026-01-09-commands
 // SOURCE: n/a
-// FORMAT THEOREM: forall s: summarize(s) -> history updated
+// FORMAT THEOREM: forall s: summarize(s) -> poll_cleared(s)
 // PURITY: SHELL
 // EFFECT: Effect<BotState, TelegramError | StateStoreError, never>
-// INVARIANT: poll is cleared after summary
+// INVARIANT: history is updated only when summary is sent
 // COMPLEXITY: O(n)/O(n)
 export const summarize = (
   context: SummarizeContext
@@ -125,27 +190,19 @@ export const summarize = (
     context.chat.seed
   )
   const threadId = context.chat.poll?.threadId ?? context.chat.threadId
-  const stopPollEffect = context.chat.poll
-    ? stopPollSafe(context.telegram, context.chatId, context.chat.poll.messageId)
-    : Effect.void
-  const nextState = applySummary(
-    context.state,
-    context.chatId,
-    pairing.pairs,
-    pairing.seed,
-    context.summaryDate
-  )
+  const stopPollEffect = buildStopPollEffect(context)
+  const nextState = buildSummaryState(context, pairing)
+  const closedState = buildClosedState(context)
+  const sendClosedMessage = sendClosedNotice(context, threadId, closedState)
+  const sendSummaryMessage = buildSummaryMessage(context, threadId, pairing, nextState)
   return pipe(
     stopPollEffect,
-    Effect.zipRight(
-      context.telegram.sendMessage(
-        context.chatId,
-        formatSummary(context.chat.title, pairing.pairs, pairing.leftovers),
-        threadId ?? undefined
+    Effect.flatMap((outcome) =>
+      Match.value(outcome).pipe(
+        Match.when("alreadyClosed", () => sendClosedMessage),
+        Match.when("stopped", () => sendSummaryMessage),
+        Match.exhaustive
       )
-    ),
-    Effect.flatMap(() => context.stateStore.set(nextState)),
-    Effect.tap(() => Effect.logInfo(`Итоговые пары отправлены для чата ${context.chatId}`)),
-    Effect.as(nextState)
+    )
   )
 }

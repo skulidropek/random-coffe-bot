@@ -3,6 +3,7 @@ import { Effect, Match, pipe } from "effect"
 import { ChatId, RngSeed } from "../core/brand.js"
 import type { BotState, ChatState } from "../core/domain.js"
 import { decideSchedule } from "../core/schedule.js"
+import { logNoRegisteredGroupChats, logScheduleDecision } from "../core/text.js"
 import { applyUpdates } from "../core/updates.js"
 import { type Config, loadConfig } from "../shell/config.js"
 import { DrizzleService, makeDrizzleService } from "../shell/drizzle.js"
@@ -19,14 +20,6 @@ import { handleCommands } from "./commands.js"
 import { handleMessages, logAndFallback, logAndIgnore, logState, logUpdates } from "./diagnostics.js"
 
 const longPollSeconds = 25
-
-const formatDecision = (decision: ReturnType<typeof decideSchedule>): string =>
-  Match.value(decision).pipe(
-    Match.when({ kind: "createPoll" }, (value) => `createPoll summary=${value.summaryDate}`),
-    Match.when({ kind: "summarize" }, (value) => `summarize summary=${value.summaryDate}`),
-    Match.when({ kind: "noop" }, () => "noop"),
-    Match.exhaustive
-  )
 
 type DecisionContext = {
   readonly state: BotState
@@ -75,7 +68,7 @@ const handleDecision = (
         const decision = decideSchedule(current, zoned.parts, zoned.weekday)
         yield* _(
           Effect.logInfo(
-            `Schedule: chat=${chatId} decision=${formatDecision(decision)}`
+            logScheduleDecision(ChatId(chatId), decision)
           )
         )
         updated = yield* _(
@@ -109,7 +102,7 @@ const runOnce = (
       yield* _(logState(updated))
       const afterMessages = yield* _(handleMessages(updated, updates, telegram, botUsername))
       if (Object.keys(afterMessages.chats).length === 0) {
-        yield* _(Effect.logWarning("Нет зарегистрированных групповых чатов. Жду апдейтов из групп."))
+        yield* _(Effect.logWarning(logNoRegisteredGroupChats()))
       }
       yield* _(stateStore.set(afterMessages))
       const afterCommands = yield* _(

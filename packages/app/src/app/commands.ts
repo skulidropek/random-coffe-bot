@@ -4,6 +4,14 @@ import type { ChatId } from "../core/brand.js"
 import type { BotState } from "../core/domain.js"
 import { formatLocalDate, nextPollWindow, summaryDateForPoll } from "../core/schedule.js"
 import { ensureChat, setThreadId } from "../core/state.js"
+import {
+  replyNextPollWindow,
+  replyPollAlreadyActive,
+  replyPollAlreadyActiveWithDate,
+  replyPollWindowOpen,
+  replySetTopicMain,
+  replySetTopicThread
+} from "../core/text.js"
 import type { IncomingUpdate } from "../core/updates.js"
 import type { StateStoreError, StateStoreShape } from "../shell/state-store.js"
 import type { TelegramError, TelegramServiceShape } from "../shell/telegram.js"
@@ -29,8 +37,8 @@ const setTopic = (
 ): Effect.Effect<BotState, TelegramError | StateStoreError> => {
   const nextState = setThreadId(state, chatId, threadId)
   const reply = threadId === null
-    ? "Ok. Polls will be posted in the main chat."
-    : "Ok. Polls will be posted in this topic."
+    ? replySetTopicMain()
+    : replySetTopicThread()
   return pipe(
     stateStore.set(nextState),
     Effect.zipRight(telegram.sendMessage(chatId, reply, threadId ?? undefined)),
@@ -74,7 +82,7 @@ const handlePoll = (
     ? pipe(
       context.telegram.sendMessage(
         context.chatId,
-        "A poll is already active. Use /summary to close it.",
+        replyPollAlreadyActive(),
         context.chat.threadId ?? undefined
       ),
       Effect.as(context.state)
@@ -112,21 +120,20 @@ type NextPollContext = {
   readonly replyThreadId?: number | undefined
 }
 
-const formatDays = (days: number): string => (days === 1 ? "1 day" : `${days} days`)
-
 const handleNextPoll = (
   context: NextPollContext
 ): Effect.Effect<BotState, TelegramError> => {
   const poll = context.chat.poll
   let text = ""
   if (poll) {
-    text = `A poll is already active. Results on ${poll.summaryDate}.`
+    text = replyPollAlreadyActiveWithDate(poll.summaryDate)
   } else if (context.pollWindow.isOpen) {
-    text = "Poll window is open now. You can start a poll with /poll."
+    text = replyPollWindowOpen()
   } else {
-    text = `Next poll window starts in ${
-      formatDays(context.pollWindow.daysUntilStart)
-    } (${context.pollWindow.startDate}).`
+    text = replyNextPollWindow(
+      context.pollWindow.daysUntilStart,
+      context.pollWindow.startDate
+    )
   }
 
   return pipe(

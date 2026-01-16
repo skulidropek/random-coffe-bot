@@ -2,6 +2,7 @@ import { Effect, pipe } from "effect"
 
 import type { ChatId, UserId } from "../core/brand.js"
 import { isGroupChat, normalizeCommand } from "../core/telegram-commands.js"
+import { replyAdminOnly } from "../core/text.js"
 import type { IncomingUpdate } from "../core/updates.js"
 import type { ChatMemberStatus, TelegramError, TelegramServiceShape } from "../shell/telegram.js"
 
@@ -92,7 +93,7 @@ const adminOnly = (
         : pipe(
           telegram.sendMessage(
             chatId,
-            "This command is available to chat admins only.",
+            replyAdminOnly(),
             threadId
           ),
           Effect.as(false)

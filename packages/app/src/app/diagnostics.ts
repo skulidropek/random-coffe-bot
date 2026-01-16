@@ -1,58 +1,31 @@
 import { Effect, pipe } from "effect"
 
-import type { BotState, Participant } from "../core/domain.js"
+import type { BotState } from "../core/domain.js"
 import { ensureChat, setThreadId } from "../core/state.js"
 import { isGroupChat } from "../core/telegram-commands.js"
+import {
+  formatStartReply,
+  formatUpdateLog,
+  logStateSnapshot,
+  logTelegramNoUpdates,
+  logTelegramReceivedUpdates,
+  logTelegramUpdate
+} from "../core/text.js"
 import type { ChatMessage, IncomingUpdate } from "../core/updates.js"
 import type { TelegramServiceShape } from "../shell/telegram.js"
 import { matchesTarget, parseCommandTarget } from "./command-utils.js"
-
-const pollWeekdays = "Polls: Friday/Saturday. Results: Monday."
-const pollPermissionHint = "Make sure the bot can send polls in this chat."
-
-const formatParticipant = (participant: Participant | undefined): string => {
-  if (!participant) {
-    return "participant=none"
-  }
-  const username = participant.username ? `@${participant.username}` : "-"
-  const name = participant.lastName
-    ? `${participant.firstName} ${participant.lastName}`
-    : participant.firstName
-  return `participant id=${participant.id} username=${username} name="${name}"`
-}
-
-const formatUpdate = (update: IncomingUpdate): string => {
-  const parts: Array<string> = [`updateId=${update.updateId}`]
-  if (update.chatSeen) {
-    parts.push(
-      `chatSeen chatId=${update.chatSeen.chatId} type=${update.chatSeen.chatType}`
-    )
-  }
-  if (update.pollVote) {
-    const options = `[${update.pollVote.optionIds.join(",")}]`
-    parts.push(
-      `pollVote pollId=${update.pollVote.pollId} ${formatParticipant(update.pollVote.participant)} options=${options}`
-    )
-  }
-  if (update.message) {
-    parts.push(
-      `message chatId=${update.message.chatId} type=${update.message.chatType} text="${update.message.text}"`
-    )
-  }
-  return parts.join(" | ")
-}
 
 export const logUpdates = (
   updates: ReadonlyArray<IncomingUpdate>
 ): Effect.Effect<void> =>
   Effect.gen(function*(_) {
     if (updates.length === 0) {
-      yield* _(Effect.logInfo("Telegram: апдейтов нет"))
+      yield* _(Effect.logInfo(logTelegramNoUpdates()))
       return
     }
-    yield* _(Effect.logInfo(`Telegram: получено апдейтов ${updates.length}`))
+    yield* _(Effect.logInfo(logTelegramReceivedUpdates(updates.length)))
     for (const update of updates) {
-      yield* _(Effect.logInfo(`Telegram: ${formatUpdate(update)}`))
+      yield* _(Effect.logInfo(logTelegramUpdate(formatUpdateLog(update))))
     }
   })
 
@@ -60,7 +33,7 @@ export const logState = (state: BotState): Effect.Effect<void> => {
   const chatsCount = Object.keys(state.chats).length
   const pollIndexCount = Object.keys(state.pollIndex).length
   return Effect.logInfo(
-    `State: chats=${chatsCount} pollIndex=${pollIndexCount} updateOffset=${state.updateOffset}`
+    logStateSnapshot(chatsCount, pollIndexCount, state.updateOffset)
   )
 }
 
@@ -85,11 +58,7 @@ const sendStartReply = (
   message: ChatMessage,
   telegram: TelegramServiceShape
 ): Effect.Effect<void> => {
-  const text = [
-    "Random Coffee bot is active ✅",
-    pollWeekdays,
-    pollPermissionHint
-  ].join("\n")
+  const text = formatStartReply()
   return logAndIgnore(
     pipe(
       telegram.sendMessage(message.chatId, text, message.messageThreadId),

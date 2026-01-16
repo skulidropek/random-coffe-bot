@@ -6,6 +6,7 @@ import { ChatId, LocalDateString, MessageId, PollId, RngSeed, UserId } from "../
 import type { BotState, ChatState } from "../../src/core/domain.js"
 import { upsertParticipant } from "../../src/core/participants.js"
 import { emptyChatState } from "../../src/core/state.js"
+import { formatPollClosedNoResults } from "../../src/core/text.js"
 import { TelegramApiError, type TelegramServiceShape } from "../../src/shell/telegram.js"
 import { makeStateStoreStub, makeStateWithChat, makeStateWithPoll, makeTelegramStub } from "./test-utils.js"
 
@@ -90,6 +91,42 @@ const makeAsyncTelegram = (
   getChatMember: () => Effect.succeed("administrator"),
   getMe: Effect.succeed(botProfile)
 })
+
+const makeClosedPollTelegramStub = (params: {
+  readonly pollId: PollId
+  readonly messageId: MessageId
+}) => {
+  const messageCalls: Array<{ readonly chatId: ChatId; readonly text: string }> = []
+  const stopPollCalls: Array<{ readonly chatId: ChatId; readonly messageId: MessageId }> = []
+  const telegram: TelegramServiceShape = {
+    getUpdates: () => Effect.succeed([]),
+    sendPoll: () => Effect.succeed({ pollId: params.pollId, messageId: params.messageId }),
+    sendMessage: (chatId, text) =>
+      Effect.sync(() => {
+        messageCalls.push({ chatId, text })
+        return MessageId(99)
+      }),
+    stopPoll: (chatId, messageId) =>
+      pipe(
+        Effect.sync(() => {
+          stopPollCalls.push({ chatId, messageId })
+        }),
+        Effect.zipRight(
+          Effect.fail(
+            new TelegramApiError({
+              description: "Bad Request: poll has already been closed",
+              errorCode: 400,
+              method: "stopPoll"
+            })
+          )
+        )
+      ),
+    getChatMember: () => Effect.succeed("administrator"),
+    getMe: Effect.succeed(botProfile)
+  }
+
+  return { telegram, messageCalls, stopPollCalls }
+}
 
 describe("actions", () => {
   it.effect("createPoll stores poll and calls sendPoll", () =>
@@ -178,22 +215,11 @@ describe("actions", () => {
         seed: RngSeed(12),
         messageId: MessageId(12)
       })
-      const { stateStore } = makeStateStoreStub(state)
-      const telegram: TelegramServiceShape = {
-        getUpdates: () => Effect.succeed([]),
-        sendPoll: () => Effect.succeed({ pollId, messageId: MessageId(12) }),
-        sendMessage: () => Effect.succeed(MessageId(99)),
-        stopPoll: () =>
-          Effect.fail(
-            new TelegramApiError({
-              description: "Bad Request: poll has already been closed",
-              errorCode: 400,
-              method: "stopPoll"
-            })
-          ),
-        getChatMember: () => Effect.succeed("administrator"),
-        getMe: Effect.succeed(botProfile)
-      }
+      const { setCalls, stateStore } = makeStateStoreStub(state)
+      const { messageCalls, stopPollCalls, telegram } = makeClosedPollTelegramStub({
+        pollId,
+        messageId: MessageId(12)
+      })
 
       const next = yield* _(
         summarize({
@@ -207,7 +233,13 @@ describe("actions", () => {
       )
 
       expect(next.chats[chatId]?.poll).toBeNull()
-      expect(next.chats[chatId]?.lastSummaryAt).toBe(summaryDate)
+      expect(next.chats[chatId]?.lastSummaryAt).toBeNull()
+      expect(Object.keys(next.chats[chatId]?.participants ?? {}).length).toBe(0)
+      expect(Object.keys(next.pollIndex).length).toBe(0)
+      expect(stopPollCalls.length).toBe(1)
+      expect(messageCalls.length).toBe(1)
+      expect(messageCalls[0]?.text).toBe(formatPollClosedNoResults())
+      expect(setCalls.length).toBe(1)
     }))
 
   it.effect("summarize mentions leftover participants when no pairs", () =>
