@@ -1,0 +1,1 @@
+DROP TABLE "bot_state" CASCADE;

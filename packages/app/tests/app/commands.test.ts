@@ -262,7 +262,7 @@ describe("commands", () => {
       expect(messageCalls[0]?.text).toBe("A poll is already active. Use /summary to close it.")
       expect(next.chats[chatId]?.poll?.pollId).toBe(pollId)
     }))
-  it.effect("/nextpoll responds even for non-admin users", () =>
+  it.effect("/nextpoll denies non-admin users", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-701")
       const pollId = PollId("poll-active")
@@ -285,7 +285,7 @@ describe("commands", () => {
         }
       }
       const base = makeStateWithPoll(chatId, chat, pollId, RngSeed(6))
-      const { messageCalls, pollCalls } = yield* _(
+      const { messageCalls, next, pollCalls } = yield* _(
         runWithStubs({
           state: base,
           update,
@@ -293,6 +293,7 @@ describe("commands", () => {
         })
       )
       expect(pollCalls.length).toBe(0)
-      expect(messageCalls[0]?.text).toBe("A poll is already active. Results on 2026-01-12.")
+      expect(messageCalls[0]?.text).toBe("This command is available to chat admins only.")
+      expect(next.chats[chatId]?.poll?.pollId).toBe(pollId)
     }))
 })

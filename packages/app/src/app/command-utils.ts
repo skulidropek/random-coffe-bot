@@ -77,8 +77,6 @@ export const toCommandEnvelope = (
 
 const isAdmin = (status: ChatMemberStatus): boolean => status === "creator" || status === "administrator"
 
-const requiresAdmin = (command: Command): boolean => command !== "/nextpoll"
-
 const adminOnly = (
   telegram: TelegramServiceShape,
   chatId: ChatId,
@@ -101,13 +99,26 @@ const adminOnly = (
     )
   )
 
-export const allowCommand = (
-  command: Command,
+// CHANGE: gate all chat commands behind admin checks
+// WHY: prevent non-admin users from changing bot configuration or state
+// QUOTE(TZ): n/a
+// REF: user-2026-01-17-admin-commands
+// SOURCE: n/a
+// FORMAT THEOREM: forall u: allow(u) = true -> isAdmin(u)
+// PURITY: SHELL
+// EFFECT: Effect<boolean, TelegramError, never>
+// INVARIANT: non-admin users receive the admin-only reply
+// COMPLEXITY: O(1)/O(1)
+export const allowAdminOnly = (
   telegram: TelegramServiceShape,
   chatId: ChatId,
   userId: UserId,
   threadId?: number
-): Effect.Effect<boolean, TelegramError> =>
-  requiresAdmin(command)
-    ? adminOnly(telegram, chatId, userId, threadId)
-    : Effect.succeed(true)
+): Effect.Effect<boolean, TelegramError> => adminOnly(telegram, chatId, userId, threadId)
+
+export const allowCommand = (
+  telegram: TelegramServiceShape,
+  chatId: ChatId,
+  userId: UserId,
+  threadId?: number
+): Effect.Effect<boolean, TelegramError> => allowAdminOnly(telegram, chatId, userId, threadId)

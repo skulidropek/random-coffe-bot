@@ -15,7 +15,8 @@ const multiplier = 48_271
 export const nextSeed = (seed: RngSeed): RngSeed => {
   const normalized = seed % modulus
   const positive = normalized > 0 ? normalized : normalized + modulus
-  return RngSeed((positive * multiplier) % modulus)
+  const bounded = positive === modulus ? 1 : positive
+  return RngSeed((bounded * multiplier) % modulus)
 }
 
 // CHANGE: sample a random integer below an upper bound

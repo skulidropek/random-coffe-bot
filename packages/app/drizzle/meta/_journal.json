@@ -8,6 +8,27 @@
       "when": 1768201961503,
       "tag": "0000_cultured_gertrude_yorkes",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1768562890324,
+      "tag": "0001_fluffy_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1768565587225,
+      "tag": "0002_whole_romulus",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1768650856515,
+      "tag": "0003_drop_bot_state",
+      "breakpoints": true
     }
   ]
 }

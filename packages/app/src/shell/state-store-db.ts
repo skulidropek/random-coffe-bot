@@ -4,20 +4,14 @@ import { eq } from "drizzle-orm"
 import { migrate } from "drizzle-orm/node-postgres/migrator"
 import { Effect, pipe } from "effect"
 
-import { botStateTable } from "./db/schema.js"
+import type { BotState } from "../core/domain.js"
+import { botMetaTable, chatsTable, pairHistoryTable, participantsTable, pollsTable } from "./db/schema.js"
 import type { DrizzleDatabase } from "./drizzle.js"
+import { makePersistState } from "./state-store-db-persist.js"
+import { buildStateFromRows } from "./state-store-db-rows.js"
+import type { DbRunner } from "./state-store-db-runner.js"
 
-const stateRowId = 1
-
-export type DbRunner<E> = <A>(
-  run: () => PromiseLike<A>
-) => Effect.Effect<A, E>
-
-export const makeDbRunner = <E>(onError: (error: Error | string) => E): DbRunner<E> => <A>(run: () => PromiseLike<A>) =>
-  Effect.tryPromise({
-    try: run,
-    catch: (error) => onError(error instanceof Error ? error : String(error))
-  })
+const metaRowId = 1
 
 const resolveMigrationsFolder = Effect.gen(function*(_) {
   const fs = yield* _(FileSystem.FileSystem)
@@ -59,57 +53,87 @@ const makeRunMigrations = <E>(
     Effect.asVoid
   )
 
-const makeLoadStatePayload = <E>(runDb: DbRunner<E>) =>
+const loadMetaRow = <E>(runDb: DbRunner<E>, onError: (error: Error | string) => E) =>
 (
   db: DrizzleDatabase
-): Effect.Effect<string | null, E> =>
+): Effect.Effect<{ readonly updateOffset: number; readonly seed: number } | null, E> =>
   pipe(
     runDb(() =>
       db
-        .select({ payload: botStateTable.payload })
-        .from(botStateTable)
-        .where(eq(botStateTable.id, stateRowId))
+        .select({ updateOffset: botMetaTable.updateOffset, seed: botMetaTable.seed })
+        .from(botMetaTable)
+        .where(eq(botMetaTable.id, metaRowId))
         .limit(1)
     ),
-    Effect.map((rows) => {
+    Effect.flatMap((rows) => {
       const row = rows[0]
-      return row ? row.payload : null
+      if (!row) {
+        return Effect.succeed(null)
+      }
+      if (row.updateOffset < 0) {
+        return Effect.fail(onError(`Invalid updateOffset: ${row.updateOffset}`))
+      }
+      return Effect.succeed({ updateOffset: row.updateOffset, seed: row.seed })
     })
   )
 
-const makePersistStatePayload = <E>(runDb: DbRunner<E>) =>
-(
-  db: DrizzleDatabase,
-  payload: string
-): Effect.Effect<void, E> =>
-  pipe(
-    runDb(() =>
-      db
-        .insert(botStateTable)
-        .values({
-          id: stateRowId,
-          payload
-        })
-        .onConflictDoUpdate({
-          target: botStateTable.id,
-          set: {
-            payload,
-            updatedAt: new Date()
-          }
-        })
-    ),
-    Effect.asVoid
-  )
+const loadNormalizedState = <E>(
+  runDb: DbRunner<E>,
+  onError: (error: Error | string) => E
+) =>
+(db: DrizzleDatabase): Effect.Effect<BotState | null, E> =>
+  Effect.gen(function*(_) {
+    const meta = yield* _(loadMetaRow(runDb, onError)(db))
+    if (!meta) {
+      return null
+    }
+    const chats = yield* _(runDb(() => db.select().from(chatsTable)))
+    const polls = yield* _(runDb(() => db.select().from(pollsTable)))
+    const participants = yield* _(runDb(() => db.select().from(participantsTable)))
+    const histories = yield* _(runDb(() => db.select().from(pairHistoryTable)))
+    return yield* _(
+      buildStateFromRows({
+        meta,
+        chats,
+        polls,
+        participants,
+        histories,
+        onError
+      })
+    )
+  })
 
+// CHANGE: load state exclusively from normalized tables (no JSON payload fallback)
+// WHY: enforce typed relational persistence without legacy JSON blobs
+// QUOTE(TZ): "всё типобезопасно без ебучих payload"
+// REF: user-2026-01-17-no-payload
+// SOURCE: n/a
+// FORMAT THEOREM: ∀db: loadState(db) = normalized(db) ∨ null
+// PURITY: SHELL
+// EFFECT: Effect<{runMigrations, loadState, persistState}, E>
+// INVARIANT: legacy payloads are never decoded
+// COMPLEXITY: O(n)/O(n)
 export const makeStateDb = <E>(
   runDb: DbRunner<E>,
   onError: (error: Error | string) => E
 ) => {
   const resolveMigrations = buildResolveMigrations(onError)
+  const loadNormalized = loadNormalizedState(runDb, onError)
+  const persist = makePersistState({ metaRowId, onError })
 
   return {
     runMigrations: makeRunMigrations(runDb, resolveMigrations),
-    loadStatePayload: makeLoadStatePayload(runDb),
-    persistStatePayload: makePersistStatePayload(runDb)
+    loadState: (db: DrizzleDatabase): Effect.Effect<BotState | null, E> =>
+      Effect.gen(function*(_) {
+        const normalized = yield* _(loadNormalized(db))
+        if (normalized) {
+          return normalized
+        }
+        return null
+      }),
+    persistState: persist
   }
 }
+
+export { makeDbRunner } from "./state-store-db-runner.js"
+export type { DbRunner } from "./state-store-db-runner.js"

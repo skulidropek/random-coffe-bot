@@ -206,7 +206,6 @@ const handleCommandUpdate = (
     const chatId = envelope.chatId
     const allowed = yield* _(
       allowCommand(
-        envelope.command,
         context.telegram,
         chatId,
         envelope.actorId,

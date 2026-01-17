@@ -71,9 +71,6 @@ const buildPairs = (
 
   while (remaining.length >= 2) {
     const current = remaining[0]
-    if (!current) {
-      return { pairs, remaining, seed: nextSeed }
-    }
     const candidates = remaining.slice(1)
     const chosen = choosePartner(current, candidates, history, nextSeed)
     nextSeed = chosen.seed

@@ -13,7 +13,7 @@ import {
 } from "../core/text.js"
 import type { ChatMessage, IncomingUpdate } from "../core/updates.js"
 import type { TelegramServiceShape } from "../shell/telegram.js"
-import { matchesTarget, parseCommandTarget } from "./command-utils.js"
+import { allowAdminOnly, matchesTarget, parseCommandTarget } from "./command-utils.js"
 
 export const logUpdates = (
   updates: ReadonlyArray<IncomingUpdate>
@@ -67,6 +67,32 @@ const sendStartReply = (
   )
 }
 
+// CHANGE: guard /start and /help against non-admin users
+// WHY: prevent non-admin users from changing thread bindings via bot commands
+// QUOTE(TZ): n/a
+// REF: user-2026-01-17-admin-commands
+// SOURCE: n/a
+// FORMAT THEOREM: forall m: allow(m) = true -> isAdmin(m.from)
+// PURITY: SHELL
+// EFFECT: Effect<boolean, never, never>
+// INVARIANT: non-admins receive the admin-only reply
+// COMPLEXITY: O(1)/O(1)
+const allowStartCommand = (
+  message: ChatMessage,
+  telegram: TelegramServiceShape
+): Effect.Effect<boolean> =>
+  message.from
+    ? logAndFallback(
+      allowAdminOnly(
+        telegram,
+        message.chatId,
+        message.from.id,
+        message.messageThreadId
+      ),
+      false
+    )
+    : Effect.succeed(false)
+
 const handleMessage = (
   state: BotState,
   update: IncomingUpdate,
@@ -79,6 +105,10 @@ const handleMessage = (
       return state
     }
     if (!isStartCommand(message.text, botUsername)) {
+      return state
+    }
+    const allowed = yield* _(allowStartCommand(message, telegram))
+    if (!allowed) {
       return state
     }
     const updated = updateThreadFromStart(state, message)

@@ -6,7 +6,6 @@ import type { RngSeed } from "../core/brand.js"
 import type { BotState } from "../core/domain.js"
 import { emptyState } from "../core/domain.js"
 import { DrizzleService, type DrizzleServiceShape } from "./drizzle.js"
-import { decodeStatePayload, encodeStatePayload } from "./state-store-codec.js"
 import { makeDbRunner, makeStateDb } from "./state-store-db.js"
 
 export class StateStoreError extends Data.TaggedError("StateStoreError")<{
@@ -60,36 +59,25 @@ const toStoreError = (
       message: formatErrorMessage(error)
     })
 
-const decodeState = (payload: string): Effect.Effect<BotState, StateStoreError> =>
-  pipe(
-    decodeStatePayload(payload),
-    Effect.mapError((error) => toStoreError(error instanceof Error ? error : String(error)))
-  )
-
 const runDb = makeDbRunner((error) => toStoreError(error))
 
-const { loadStatePayload, persistStatePayload, runMigrations } = makeStateDb(
+const { loadState, persistState, runMigrations } = makeStateDb(
   runDb,
   (error) => toStoreError(error)
 )
-
-const persistState = (
-  db: DrizzleServiceShape["db"],
-  state: BotState
-): Effect.Effect<void, StateStoreError> => persistStatePayload(db, encodeStatePayload(state))
 
 const loadOrInitState = (
   db: DrizzleServiceShape["db"],
   initialSeed: RngSeed
 ): Effect.Effect<BotState, StateStoreError> =>
   pipe(
-    loadStatePayload(db),
-    Effect.flatMap((payload) =>
-      payload
-        ? decodeState(payload)
+    loadState(db),
+    Effect.flatMap((state) =>
+      state
+        ? Effect.succeed(state)
         : pipe(
           Effect.succeed(emptyState(initialSeed)),
-          Effect.tap((state) => persistState(db, state))
+          Effect.tap((next) => persistState(db, next))
         )
     )
   )

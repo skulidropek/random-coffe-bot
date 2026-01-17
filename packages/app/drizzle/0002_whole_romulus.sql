@@ -1,0 +1,1 @@
+ALTER TABLE "participants" ALTER COLUMN "user_id" SET DATA TYPE bigint;
