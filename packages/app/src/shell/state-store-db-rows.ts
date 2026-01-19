@@ -65,6 +65,7 @@ const toChatState = <E>(args: {
       seed: RngSeed(args.row.seed),
       threadId: args.row.threadId ?? null,
       title: args.row.title ?? null,
+      inviteLink: args.row.inviteLink ?? null,
       lastSummaryAt
     }
   })

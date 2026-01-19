@@ -6,7 +6,7 @@ import type { BotState, ChatState, ChatType, Participant } from "../../src/core/
 import { emptyState } from "../../src/core/domain.js"
 import type { IncomingUpdate } from "../../src/core/updates.js"
 import type { StateStoreShape } from "../../src/shell/state-store.js"
-import type { ChatMemberStatus, TelegramServiceShape } from "../../src/shell/telegram.js"
+import type { ChatInfo, ChatMemberStatus, ReplyKeyboard, TelegramServiceShape } from "../../src/shell/telegram.js"
 
 export type PollCall = {
   readonly chatId: ChatId
@@ -21,6 +21,13 @@ export type MessageCall = {
   readonly threadId?: number | undefined
 }
 
+export type MessageWithKeyboardCall = {
+  readonly chatId: ChatId
+  readonly text: string
+  readonly keyboard: ReplyKeyboard
+  readonly threadId?: number | undefined
+}
+
 export type StopPollCall = {
   readonly chatId: ChatId
   readonly messageId: MessageId
@@ -31,21 +38,79 @@ export type MemberCall = {
   readonly userId: UserId
 }
 
-export const makeTelegramStub = (options?: {
+export type MemberCountCall = {
+  readonly chatId: ChatId
+}
+
+export type ChatCall = {
+  readonly chatId: ChatId
+}
+
+type TelegramStubOptions = {
+  readonly memberStatus: ChatMemberStatus
+  readonly memberCount: number
+  readonly pollResult: { readonly pollId: PollId; readonly messageId: MessageId }
+  readonly botUsername: string
+  readonly chatInfo: Omit<ChatInfo, "id">
+}
+
+type TelegramStubOverrides = {
   readonly memberStatus?: ChatMemberStatus
+  readonly memberCount?: number
   readonly pollResult?: { readonly pollId: PollId; readonly messageId: MessageId }
   readonly botUsername?: string | undefined
-}) => {
+  readonly chatInfo?: Omit<ChatInfo, "id">
+}
+
+const defaultPollResult = {
+  pollId: PollId("poll-1"),
+  messageId: MessageId(100)
+}
+
+const defaultBotUsername = "random_coffee_bot"
+
+const resolveMemberStatus = (options?: TelegramStubOverrides): ChatMemberStatus =>
+  options?.memberStatus ?? "administrator"
+
+const resolveMemberCount = (options?: TelegramStubOverrides): number => options?.memberCount ?? 0
+
+const resolvePollResult = (
+  options?: TelegramStubOverrides
+): { readonly pollId: PollId; readonly messageId: MessageId } => options?.pollResult ?? defaultPollResult
+
+const resolveBotUsername = (options?: TelegramStubOverrides): string => options?.botUsername ?? defaultBotUsername
+
+const resolveChatInfo = (options?: TelegramStubOverrides): Omit<ChatInfo, "id"> =>
+  options?.chatInfo ?? {
+    title: undefined,
+    username: undefined,
+    inviteLink: undefined
+  }
+
+const resolveTelegramStubOptions = (
+  options?: TelegramStubOverrides
+): TelegramStubOptions => ({
+  memberStatus: resolveMemberStatus(options),
+  memberCount: resolveMemberCount(options),
+  pollResult: resolvePollResult(options),
+  botUsername: resolveBotUsername(options),
+  chatInfo: resolveChatInfo(options)
+})
+
+export const makeTelegramStub = (options?: TelegramStubOverrides) => {
   const pollCalls: Array<PollCall> = []
   const messageCalls: Array<MessageCall> = []
+  const messageWithKeyboardCalls: Array<MessageWithKeyboardCall> = []
   const stopPollCalls: Array<StopPollCall> = []
   const memberCalls: Array<MemberCall> = []
-  const pollResult = options?.pollResult ?? {
-    pollId: PollId("poll-1"),
-    messageId: MessageId(100)
-  }
-  let memberStatus: ChatMemberStatus = options?.memberStatus ?? "administrator"
-  const botUsername = options?.botUsername ?? "random_coffee_bot"
+  const memberCountCalls: Array<MemberCountCall> = []
+  const chatCalls: Array<ChatCall> = []
+  const resolvedOptions = resolveTelegramStubOptions(options)
+  const pollResult = resolvedOptions.pollResult
+  let memberStatus: ChatMemberStatus = resolvedOptions.memberStatus
+  let memberCount = resolvedOptions.memberCount
+  const botUsername = resolvedOptions.botUsername
+  const chatInfo = resolvedOptions.chatInfo
 
   const telegram: TelegramServiceShape = {
     getUpdates: () => Effect.succeed([]),
@@ -64,6 +129,11 @@ export const makeTelegramStub = (options?: {
         messageCalls.push({ chatId, text, threadId })
         return MessageId(200)
       }),
+    sendMessageWithKeyboard: (chatId, text, keyboard, threadId) =>
+      Effect.sync(() => {
+        messageWithKeyboardCalls.push({ chatId, text, keyboard, threadId })
+        return MessageId(201)
+      }),
     stopPoll: (chatId, messageId) =>
       Effect.sync(() => {
         stopPollCalls.push({ chatId, messageId })
@@ -72,6 +142,19 @@ export const makeTelegramStub = (options?: {
       Effect.sync(() => {
         memberCalls.push({ chatId, userId })
         return memberStatus
+      }),
+    getChatMemberCount: (chatId) =>
+      Effect.sync(() => {
+        memberCountCalls.push({ chatId })
+        return memberCount
+      }),
+    getChat: (chatId) =>
+      Effect.sync(() => {
+        chatCalls.push({ chatId })
+        return {
+          id: chatId,
+          ...chatInfo
+        }
       }),
     getMe: Effect.sync(() => ({
       id: UserId(1),
@@ -85,13 +168,21 @@ export const makeTelegramStub = (options?: {
     memberStatus = status
   }
 
+  const setMemberCount = (count: number): void => {
+    memberCount = count
+  }
+
   return {
     telegram,
     pollCalls,
     messageCalls,
+    messageWithKeyboardCalls,
     stopPollCalls,
     memberCalls,
-    setMemberStatus
+    memberCountCalls,
+    chatCalls,
+    setMemberStatus,
+    setMemberCount
   }
 }
 

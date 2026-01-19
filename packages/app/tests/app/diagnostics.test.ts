@@ -16,7 +16,7 @@ const runStart = (params: {
   readonly memberStatus?: ChatMemberStatus
 }) =>
   Effect.gen(function*(_) {
-    const { messageCalls, setMemberStatus, telegram } = makeTelegramStub()
+    const { messageCalls, messageWithKeyboardCalls, setMemberStatus, telegram } = makeTelegramStub()
     if (params.memberStatus) {
       setMemberStatus(params.memberStatus)
     }
@@ -25,9 +25,15 @@ const runStart = (params: {
 
     return {
       next,
-      messageText: messageCalls[0]?.text ?? ""
+      messageText: messageCalls[0]?.text ?? "",
+      messageWithKeyboardCalls
     }
   })
+
+type KeyboardButtonValue = string | { readonly text?: string | undefined } | null | undefined
+
+const resolveButtonText = (value: KeyboardButtonValue): string | undefined =>
+  typeof value === "string" ? value : value?.text
 
 describe("diagnostics", () => {
   it.effect("/start updates thread id for admins", () =>
@@ -78,5 +84,31 @@ describe("diagnostics", () => {
 
       expect(messageText).toBe("This command is available to chat admins only.")
       expect(next.chats[chatId]?.threadId).toBe(123)
+    }))
+
+  it.effect("/start in private chat sends onboarding message with buttons", () =>
+    Effect.gen(function*(_) {
+      const chatId = ChatId("2001")
+      const user = makeParticipant(42, "Private")
+      const update = makeMessageUpdate({
+        updateId: 3,
+        chatId,
+        text: "/start",
+        from: user,
+        chatType: "private"
+      })
+      const base = emptyState(RngSeed(12))
+
+      const { messageWithKeyboardCalls } = yield* _(
+        runStart({
+          state: base,
+          update
+        })
+      )
+
+      const call = messageWithKeyboardCalls[0]
+      expect(call?.text.startsWith("Привет!👋")).toBe(true)
+      expect(resolveButtonText(call?.keyboard.keyboard[0]?.[0])).toBe("Заполнить профиль")
+      expect(resolveButtonText(call?.keyboard.keyboard[1]?.[0])).toBe("Я организатор")
     }))
 })

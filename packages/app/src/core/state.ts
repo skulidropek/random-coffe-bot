@@ -19,6 +19,7 @@ export const emptyChatState = (seed: RngSeed): ChatState => ({
   seed,
   threadId: null,
   title: null,
+  inviteLink: null,
   lastSummaryAt: null
 })
 
@@ -128,6 +129,29 @@ export const setChatTitle = (
       : {
         ...chat,
         title
+      }
+  ))
+
+// CHANGE: update the cached chat invite link
+// WHY: allow manual configuration of group join links for the leaderboard
+// QUOTE(TZ): "должна быть ссылка на группу"
+// REF: user-2026-01-18-leaderboard-link
+// SOURCE: n/a
+// FORMAT THEOREM: forall s,id,l: setLink(s,id,l).chats[id].inviteLink = l
+// PURITY: CORE
+// INVARIANT: only the chat invite link is updated
+// COMPLEXITY: O(1)/O(1)
+export const setChatInviteLink = (
+  state: BotState,
+  chatId: ChatId,
+  inviteLink: string | null
+): BotState =>
+  updateChat(state, chatId, (chat) => (
+    chat.inviteLink === inviteLink
+      ? chat
+      : {
+        ...chat,
+        inviteLink
       }
   ))
 

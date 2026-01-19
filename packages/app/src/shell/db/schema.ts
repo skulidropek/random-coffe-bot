@@ -14,6 +14,7 @@ export const chatsTable = pgTable("chats", {
   seed: integer("seed").notNull(),
   threadId: integer("thread_id"),
   title: text("title"),
+  inviteLink: text("invite_link"),
   lastSummaryAt: text("last_summary_at")
 })
 

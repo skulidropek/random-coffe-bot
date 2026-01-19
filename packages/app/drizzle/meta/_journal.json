@@ -29,6 +29,13 @@
       "when": 1768650856515,
       "tag": "0003_drop_bot_state",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1768809158568,
+      "tag": "0004_add_chat_invite_link",
+      "breakpoints": true
     }
   ]
 }

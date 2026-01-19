@@ -14,6 +14,7 @@ type PersistRows = {
     seed: number
     threadId: number | null
     title: string | null
+    inviteLink: string | null
     lastSummaryAt: string | null
   }>
   pollRows: Array<{
@@ -58,6 +59,7 @@ const buildPersistRows = (
     seed: chat.seed,
     threadId: chat.threadId,
     title: chat.title,
+    inviteLink: chat.inviteLink,
     lastSummaryAt: chat.lastSummaryAt
   }))
   const pollRows = Object.values(state.chats)

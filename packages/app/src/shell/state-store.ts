@@ -6,7 +6,7 @@ import type { RngSeed } from "../core/brand.js"
 import type { BotState } from "../core/domain.js"
 import { emptyState } from "../core/domain.js"
 import { DrizzleService, type DrizzleServiceShape } from "./drizzle.js"
-import { makeDbRunner, makeStateDb } from "./state-store-db.js"
+import { makeDbRunner, makeStateDb, type StateDb } from "./state-store-db.js"
 
 export class StateStoreError extends Data.TaggedError("StateStoreError")<{
   readonly message: string
@@ -61,14 +61,18 @@ const toStoreError = (
 
 const runDb = makeDbRunner((error) => toStoreError(error))
 
-const { loadState, persistState, runMigrations } = makeStateDb(
-  runDb,
-  (error) => toStoreError(error)
-)
+const makeStateDbWithSchema = (migrationsSchema?: string): StateDb<StateStoreError> =>
+  makeStateDb(
+    runDb,
+    (error) => toStoreError(error),
+    migrationsSchema
+  )
 
 const loadOrInitState = (
   db: DrizzleServiceShape["db"],
-  initialSeed: RngSeed
+  initialSeed: RngSeed,
+  loadState: StateDb<StateStoreError>["loadState"],
+  persistState: StateDb<StateStoreError>["persistState"]
 ): Effect.Effect<BotState, StateStoreError> =>
   pipe(
     loadState(db),
@@ -93,7 +97,8 @@ const loadOrInitState = (
 // INVARIANT: state is schema-validated before use
 // COMPLEXITY: O(n)/O(n)
 export const makeStateStore = (
-  initialSeed: RngSeed
+  initialSeed: RngSeed,
+  migrationsSchema?: string
 ): Effect.Effect<
   StateStoreShape,
   StateStoreError,
@@ -102,8 +107,9 @@ export const makeStateStore = (
   Effect.gen(function*(_) {
     const dbService = yield* _(DrizzleService)
     const db = dbService.db
+    const { loadState, persistState, runMigrations } = makeStateDbWithSchema(migrationsSchema)
     yield* _(runMigrations(db))
-    const state = yield* _(loadOrInitState(db, initialSeed))
+    const state = yield* _(loadOrInitState(db, initialSeed, loadState, persistState))
     const ref = yield* _(Ref.make(state))
     return {
       get: Ref.get(ref),

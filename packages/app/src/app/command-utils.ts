@@ -1,12 +1,13 @@
 import { Effect, pipe } from "effect"
 
 import type { ChatId, UserId } from "../core/brand.js"
+import type { ChatType } from "../core/domain.js"
 import { isGroupChat, normalizeCommand } from "../core/telegram-commands.js"
 import { replyAdminOnly } from "../core/text.js"
 import type { IncomingUpdate } from "../core/updates.js"
 import type { ChatMemberStatus, TelegramError, TelegramServiceShape } from "../shell/telegram.js"
 
-export type Command = "/settopic" | "/poll" | "/summary" | "/nextpoll"
+export type Command = "/settopic" | "/poll" | "/summary" | "/nextpoll" | "/leaderboard" | "/setlink"
 
 const normalizeUsername = (value: string): string => value.replace(/^@/, "").toLowerCase()
 
@@ -35,7 +36,9 @@ const parseCommand = (text: string, botUsername?: string): Command | null => {
   return command === "/settopic" ||
       command === "/poll" ||
       command === "/summary" ||
-      command === "/nextpoll"
+      command === "/nextpoll" ||
+      command === "/leaderboard" ||
+      command === "/setlink"
     ? command
     : null
 }
@@ -44,6 +47,8 @@ export type CommandEnvelope = {
   readonly chatId: ChatId
   readonly actorId: UserId
   readonly command: Command
+  readonly chatType: ChatType
+  readonly text: string
   readonly replyThreadId?: number | undefined
   readonly messageThreadId?: number | undefined
   readonly threadId: number | null
@@ -54,7 +59,7 @@ export const toCommandEnvelope = (
   botUsername?: string
 ): CommandEnvelope | null => {
   const message = update.message
-  if (!message || !isGroupChat(message.chatType)) {
+  if (!message) {
     return null
   }
   const actor = message.from
@@ -65,10 +70,15 @@ export const toCommandEnvelope = (
   if (!command) {
     return null
   }
+  if (!isGroupChat(message.chatType) && command !== "/leaderboard") {
+    return null
+  }
   return {
     chatId: message.chatId,
     actorId: actor.id,
     command,
+    chatType: message.chatType,
+    text: message.text,
     replyThreadId: message.messageThreadId ?? undefined,
     messageThreadId: message.messageThreadId,
     threadId: message.messageThreadId ?? null
@@ -116,9 +126,23 @@ export const allowAdminOnly = (
   threadId?: number
 ): Effect.Effect<boolean, TelegramError> => adminOnly(telegram, chatId, userId, threadId)
 
+// CHANGE: allow leaderboard in all chats while keeping admin gating elsewhere
+// WHY: leaderboard is read-only and should be public
+// QUOTE(TZ): "Сделай  /leaderboard публичной"
+// REF: user-2026-01-18-leaderboard-public
+// SOURCE: n/a
+// FORMAT THEOREM: forall c: allow(/leaderboard, c) = true
+// PURITY: SHELL
+// EFFECT: Effect<boolean, TelegramError, never>
+// INVARIANT: admin gating stays for non-leaderboard commands
+// COMPLEXITY: O(1)/O(1)
 export const allowCommand = (
   telegram: TelegramServiceShape,
   chatId: ChatId,
   userId: UserId,
+  command: Command,
   threadId?: number
-): Effect.Effect<boolean, TelegramError> => allowAdminOnly(telegram, chatId, userId, threadId)
+): Effect.Effect<boolean, TelegramError> =>
+  command === "/leaderboard"
+    ? Effect.succeed(true)
+    : allowAdminOnly(telegram, chatId, userId, threadId)

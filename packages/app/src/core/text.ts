@@ -5,6 +5,14 @@ import type { Pairing, Participant } from "./domain.js"
 import type { ScheduleDecision } from "./schedule.js"
 import type { IncomingUpdate } from "./updates.js"
 
+export type LeaderboardEntry = {
+  readonly chatId: ChatId
+  readonly title: string | null
+  readonly members: number
+  readonly username?: string | undefined
+  readonly inviteLink?: string | undefined
+}
+
 // CHANGE: define poll option labels
 // WHY: keep poll response text configurable in one place
 // QUOTE(TZ): "Yes! 🤗"
@@ -42,6 +50,60 @@ const formatStandalone = (participant: Participant): string => `➪ ${mention(pa
 
 const formatDays = (days: number): string => (days === 1 ? "1 day" : `${days} days`)
 
+const formatMembersCount = (members: number): string => members === 1 ? "1 member" : `${members} members`
+
+const normalizeUsername = (value: string | undefined): string | null => {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return null
+  }
+  return /^\w+$/u.test(trimmed) ? trimmed : null
+}
+
+const normalizeInviteLink = (value: string | undefined): string | null => {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return null
+  }
+  return /^https?:\/\//.test(trimmed) ? trimmed : null
+}
+
+const formatLeaderboardLink = (entry: LeaderboardEntry): string | null => {
+  const username = normalizeUsername(entry.username)
+  if (username) {
+    const url = `https://t.me/${username}`
+    return `<a href="${url}">Join</a>`
+  }
+  const invite = normalizeInviteLink(entry.inviteLink)
+  return invite ? `<a href="${escapeHtml(invite)}">Join</a>` : null
+}
+
+const leaderboardTitle = (entry: LeaderboardEntry): string => entry.title ?? `Chat ${entry.chatId}`
+
+const sortLeaderboardEntries = (
+  entries: ReadonlyArray<LeaderboardEntry>
+): ReadonlyArray<LeaderboardEntry> => {
+  const sorted = [...entries]
+  sorted.sort((left, right) => {
+    const byMembers = right.members - left.members
+    if (byMembers !== 0) {
+      return byMembers
+    }
+    return leaderboardTitle(left).localeCompare(leaderboardTitle(right), "en")
+  })
+  return sorted
+}
+
+const formatLeaderboardLine = (
+  entry: LeaderboardEntry,
+  index: number
+): string => {
+  const title = escapeHtml(leaderboardTitle(entry))
+  const link = formatLeaderboardLink(entry)
+  const suffix = link ? ` (${link})` : " (link unavailable)"
+  return `${index + 1}. ${title} — ${formatMembersCount(entry.members)}${suffix}`
+}
+
 // CHANGE: format the admin-only command reply
 // WHY: centralize user-facing command text in a single module
 // QUOTE(TZ): "This command is available to chat admins only."
@@ -74,6 +136,28 @@ export const replySetTopicMain = (): string => "Ok. Polls will be posted in the 
 // INVARIANT: message is stable
 // COMPLEXITY: O(1)/O(1)
 export const replySetTopicThread = (): string => "Ok. Polls will be posted in this topic."
+
+// CHANGE: format the /setlink success reply
+// WHY: confirm that the invite link was stored
+// QUOTE(TZ): "должна быть ссылка на группу"
+// REF: user-2026-01-18-leaderboard-link
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: message != ""
+// PURITY: CORE
+// INVARIANT: message is stable
+// COMPLEXITY: O(1)/O(1)
+export const replySetLinkSaved = (): string => "Invite link saved."
+
+// CHANGE: format the /setlink invalid input reply
+// WHY: guide users to provide a valid Telegram link
+// QUOTE(TZ): "должна быть ссылка на группу"
+// REF: user-2026-01-18-leaderboard-link
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: message contains example
+// PURITY: CORE
+// INVARIANT: reply includes example usage
+// COMPLEXITY: O(1)/O(1)
+export const replySetLinkInvalid = (): string => "Invalid link. Use: /setlink https://t.me/yourgroup"
 
 // CHANGE: format the reply when a poll is already active
 // WHY: keep user-facing command responses centralized
@@ -123,6 +207,90 @@ export const replyNextPollWindow = (
   daysUntilStart: number,
   startDate: LocalDateString
 ): string => `Next poll window starts in ${formatDays(daysUntilStart)} (${startDate}).`
+
+// CHANGE: format the reply when no chats are registered for a leaderboard
+// WHY: explain why the leaderboard cannot be computed yet
+// QUOTE(TZ): "список групп в которых используется бот"
+// REF: user-2026-01-18-leaderboard
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: message != ""
+// PURITY: CORE
+// INVARIANT: message is stable
+// COMPLEXITY: O(1)/O(1)
+export const replyLeaderboardEmpty = (): string => "No registered group chats yet."
+
+// CHANGE: format the reply when leaderboard data cannot be fetched
+// WHY: disclose that some chats were skipped due to missing access
+// QUOTE(TZ): "список групп в которых используется бот"
+// REF: user-2026-01-18-leaderboard
+// SOURCE: n/a
+// FORMAT THEOREM: forall n: message contains n
+// PURITY: CORE
+// INVARIANT: skipped count is preserved
+// COMPLEXITY: O(1)/O(1)
+export const replyLeaderboardUnavailable = (skipped: number): string =>
+  `Leaderboard is unavailable right now. Skipped ${skipped} chats due to missing access.`
+
+// CHANGE: format a leaderboard message with group member counts
+// WHY: let users discover communities by size
+// QUOTE(TZ): "Типо Название, колво участников"
+// REF: user-2026-01-18-leaderboard
+// SOURCE: n/a
+// FORMAT THEOREM: forall es: lines(format(es)) = |es| + header + note
+// PURITY: CORE
+// INVARIANT: entries are sorted by member count descending
+// COMPLEXITY: O(n log n)/O(n)
+export const formatLeaderboard = (
+  entries: ReadonlyArray<LeaderboardEntry>,
+  skipped: number
+): string => {
+  const sorted = sortLeaderboardEntries(entries)
+  const header = "Group leaderboard (members):"
+  const lines = sorted.map((entry, index) => formatLeaderboardLine(entry, index))
+  const note = skipped > 0
+    ? `Skipped ${skipped} chats due to missing access.`
+    : null
+  return [
+    header,
+    ...lines,
+    ...(note ? [note] : [])
+  ].join("\n")
+}
+
+// CHANGE: format the private /start reply message
+// WHY: greet users and explain private chat capabilities
+// QUOTE(TZ): "Если человек пишет боту в личку \"/start\" то он получает такое сообщение"
+// REF: user-2026-01-19-private-start
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: message != ""
+// PURITY: CORE
+// INVARIANT: reply contains onboarding steps
+// COMPLEXITY: O(1)/O(1)
+export const formatPrivateStartReply = (): string =>
+  [
+    "Привет!👋",
+    "Я Random Coffee бот для групповых чатов 🤖",
+    "",
+    "Здесь я буду дублировать для тебя всех партнеров, подобранных в каждой группе, где ты подтвердил участие во встречах",
+    "",
+    "Также тут ты можешь заполнить и отредактировать свой профиль, чтобы я мог подключить умный алгоритм и лучше подбирать тебе пары. Если хочешь повысить точность подбора, жми кнопку \"Заполнить профиль\" ниже 👇",
+    "",
+    "А если хочешь добавить бот в свою группу, жми \"Я организатор\".  Подскажу, как это сделать."
+  ].join("\n")
+
+// CHANGE: define button labels for private /start
+// WHY: keep button text centralized alongside other user-facing strings
+// QUOTE(TZ): "кнопки"
+// REF: user-2026-01-19-private-start
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: rows = 2
+// PURITY: CORE
+// INVARIANT: each row contains exactly one label
+// COMPLEXITY: O(1)/O(1)
+export const privateStartButtons = (): ReadonlyArray<ReadonlyArray<string>> => [
+  ["Заполнить профиль"],
+  ["Я организатор"]
+]
 
 // CHANGE: format the /start reply message
 // WHY: keep user-facing bot text centralized

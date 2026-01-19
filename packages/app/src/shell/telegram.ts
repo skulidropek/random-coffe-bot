@@ -1,6 +1,6 @@
 import { Context, Data, Effect, pipe } from "effect"
 import { Bot, GrammyError, HttpError } from "grammy"
-import type { Update, User } from "grammy/types"
+import type { ReplyKeyboardMarkup, Update, User } from "grammy/types"
 
 import { ChatId, MessageId, PollId, UserId } from "../core/brand.js"
 import type { ChatType, Participant } from "../core/domain.js"
@@ -86,6 +86,8 @@ export type SendPollResult = {
   readonly messageId: MessageId
 }
 
+export type ReplyKeyboard = ReplyKeyboardMarkup
+
 export type ChatMemberStatus =
   | "creator"
   | "administrator"
@@ -99,6 +101,13 @@ export type BotProfile = {
   readonly username?: string | undefined
   readonly firstName: string
   readonly lastName?: string | undefined
+}
+
+export type ChatInfo = {
+  readonly id: ChatId
+  readonly title?: string | undefined
+  readonly username?: string | undefined
+  readonly inviteLink?: string | undefined
 }
 
 export type TelegramServiceShape = {
@@ -117,6 +126,12 @@ export type TelegramServiceShape = {
     text: string,
     threadId?: number
   ) => Effect.Effect<MessageId, TelegramError>
+  readonly sendMessageWithKeyboard: (
+    chatId: ChatId,
+    text: string,
+    keyboard: ReplyKeyboard,
+    threadId?: number
+  ) => Effect.Effect<MessageId, TelegramError>
   readonly stopPoll: (
     chatId: ChatId,
     messageId: MessageId
@@ -125,6 +140,12 @@ export type TelegramServiceShape = {
     chatId: ChatId,
     userId: UserId
   ) => Effect.Effect<ChatMemberStatus, TelegramError>
+  readonly getChatMemberCount: (
+    chatId: ChatId
+  ) => Effect.Effect<number, TelegramError>
+  readonly getChat: (
+    chatId: ChatId
+  ) => Effect.Effect<ChatInfo, TelegramError>
   readonly getMe: Effect.Effect<BotProfile, TelegramError>
 }
 
@@ -219,6 +240,24 @@ const makeSendMessage = (
     Effect.map((message) => MessageId(message.message_id))
   )
 
+const makeSendMessageWithKeyboard = (
+  bot: Bot
+): TelegramServiceShape["sendMessageWithKeyboard"] =>
+(chatId, text, keyboard, threadId) =>
+  pipe(
+    Effect.tryPromise({
+      try: () =>
+        bot.api.sendMessage(
+          chatId,
+          text,
+          threadId === undefined
+            ? { parse_mode: "HTML", reply_markup: keyboard }
+            : { parse_mode: "HTML", message_thread_id: threadId, reply_markup: keyboard }
+        ),
+      catch: (error) => mapError(error instanceof Error ? error : String(error))
+    }),
+    Effect.map((message) => MessageId(message.message_id))
+  )
 const makeGetChatMember = (
   bot: Bot
 ): TelegramServiceShape["getChatMember"] =>
@@ -229,6 +268,34 @@ const makeGetChatMember = (
       catch: (error) => mapError(error instanceof Error ? error : String(error))
     }),
     Effect.map((member) => member.status)
+  )
+
+const makeGetChatMemberCount = (
+  bot: Bot
+): TelegramServiceShape["getChatMemberCount"] =>
+(chatId) =>
+  pipe(
+    Effect.tryPromise({
+      try: () => bot.api.getChatMemberCount(chatId),
+      catch: (error) => mapError(error instanceof Error ? error : String(error))
+    })
+  )
+
+const makeGetChat = (
+  bot: Bot
+): TelegramServiceShape["getChat"] =>
+(chatId) =>
+  pipe(
+    Effect.tryPromise({
+      try: () => bot.api.getChat(chatId),
+      catch: (error) => mapError(error instanceof Error ? error : String(error))
+    }),
+    Effect.map((chat) => ({
+      id: ChatId(chat.id.toString()),
+      title: "title" in chat ? chat.title : undefined,
+      username: "username" in chat ? chat.username : undefined,
+      inviteLink: "invite_link" in chat ? chat.invite_link : undefined
+    }))
   )
 
 const makeGetMe = (
@@ -276,8 +343,11 @@ export const makeTelegramService = (token: string): TelegramServiceShape => {
     getUpdates: makeGetUpdates(bot),
     sendPoll: makeSendPoll(bot),
     sendMessage: makeSendMessage(bot),
+    sendMessageWithKeyboard: makeSendMessageWithKeyboard(bot),
     stopPoll: makeStopPoll(bot),
     getChatMember: makeGetChatMember(bot),
+    getChatMemberCount: makeGetChatMemberCount(bot),
+    getChat: makeGetChat(bot),
     getMe: makeGetMe(bot)
   }
 }

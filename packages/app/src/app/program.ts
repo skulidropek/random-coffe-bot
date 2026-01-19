@@ -152,7 +152,7 @@ const buildRuntime = (
       )
       const stateStore = yield* _(
         pipe(
-          makeStateStore(seed),
+          makeStateStore(seed, config.migrationsSchema),
           Effect.provideService(DrizzleService, drizzleService)
         )
       )

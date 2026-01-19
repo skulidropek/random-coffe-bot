@@ -11,7 +11,8 @@ export class ConfigError extends Data.TaggedError("ConfigError")<{
 const envSchema = S.Struct({
   BOT_TOKEN: S.NonEmptyString,
   BOT_TIMEZONE: S.optionalWith(S.NonEmptyString, { default: () => "UTC" }),
-  BOT_DATABASE_URL: S.NonEmptyString
+  BOT_DATABASE_URL: S.NonEmptyString,
+  BOT_MIGRATIONS_SCHEMA: S.optional(S.NonEmptyString)
 })
 
 type Env = S.Schema.Type<typeof envSchema>
@@ -20,6 +21,7 @@ export type Config = {
   readonly token: string
   readonly timeZone: string
   readonly databaseUrl: string
+  readonly migrationsSchema?: string | undefined
 }
 
 const toConfigError = (
@@ -83,7 +85,8 @@ export const loadConfig = pipe(
   Effect.map((env: Env): Config => ({
     token: env.BOT_TOKEN,
     timeZone: env.BOT_TIMEZONE,
-    databaseUrl: env.BOT_DATABASE_URL
+    databaseUrl: env.BOT_DATABASE_URL,
+    migrationsSchema: env.BOT_MIGRATIONS_SCHEMA
   })),
   Effect.mapError((error) => toConfigError(error instanceof Error ? error : String(error)))
 )

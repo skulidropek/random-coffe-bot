@@ -4,15 +4,17 @@ import type { BotState } from "../core/domain.js"
 import { ensureChat, setThreadId } from "../core/state.js"
 import { isGroupChat } from "../core/telegram-commands.js"
 import {
+  formatPrivateStartReply,
   formatStartReply,
   formatUpdateLog,
   logStateSnapshot,
   logTelegramNoUpdates,
   logTelegramReceivedUpdates,
-  logTelegramUpdate
+  logTelegramUpdate,
+  privateStartButtons
 } from "../core/text.js"
 import type { ChatMessage, IncomingUpdate } from "../core/updates.js"
-import type { TelegramServiceShape } from "../shell/telegram.js"
+import type { ReplyKeyboard, TelegramServiceShape } from "../shell/telegram.js"
 import { allowAdminOnly, matchesTarget, parseCommandTarget } from "./command-utils.js"
 
 export const logUpdates = (
@@ -67,6 +69,24 @@ const sendStartReply = (
   )
 }
 
+const buildPrivateStartKeyboard = (): ReplyKeyboard => ({
+  keyboard: privateStartButtons().map((row) => row.map((text) => ({ text }))),
+  resize_keyboard: true
+})
+
+const sendPrivateStartReply = (
+  message: ChatMessage,
+  telegram: TelegramServiceShape
+): Effect.Effect<void> => {
+  const text = formatPrivateStartReply()
+  return logAndIgnore(
+    pipe(
+      telegram.sendMessageWithKeyboard(message.chatId, text, buildPrivateStartKeyboard()),
+      Effect.asVoid
+    )
+  )
+}
+
 // CHANGE: guard /start and /help against non-admin users
 // WHY: prevent non-admin users from changing thread bindings via bot commands
 // QUOTE(TZ): n/a
@@ -101,19 +121,29 @@ const handleMessage = (
 ): Effect.Effect<BotState> =>
   Effect.gen(function*(_) {
     const message = update.message
-    if (!message || !isGroupChat(message.chatType)) {
+    if (!message) {
+      return state
+    }
+    if (isGroupChat(message.chatType)) {
+      if (!isStartCommand(message.text, botUsername)) {
+        return state
+      }
+      const allowed = yield* _(allowStartCommand(message, telegram))
+      if (!allowed) {
+        return state
+      }
+      const updated = updateThreadFromStart(state, message)
+      yield* _(sendStartReply(message, telegram))
+      return updated
+    }
+    if (message.chatType !== "private") {
       return state
     }
     if (!isStartCommand(message.text, botUsername)) {
       return state
     }
-    const allowed = yield* _(allowStartCommand(message, telegram))
-    if (!allowed) {
-      return state
-    }
-    const updated = updateThreadFromStart(state, message)
-    yield* _(sendStartReply(message, telegram))
-    return updated
+    yield* _(sendPrivateStartReply(message, telegram))
+    return state
   })
 
 // CHANGE: keep /start topic bindings while ignoring Telegram send errors

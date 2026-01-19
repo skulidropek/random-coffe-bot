@@ -18,6 +18,7 @@ const baseChatState = (): ChatState => ({
   seed: RngSeed(1),
   threadId: null,
   title: null,
+  inviteLink: null,
   lastSummaryAt: null
 })
 

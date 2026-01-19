@@ -11,6 +11,14 @@ import { makePersistState } from "./state-store-db-persist.js"
 import { buildStateFromRows } from "./state-store-db-rows.js"
 import type { DbRunner } from "./state-store-db-runner.js"
 
+export type StateDb<E> = {
+  readonly runMigrations: (
+    db: DrizzleDatabase
+  ) => Effect.Effect<void, E, FileSystem.FileSystem | Path.Path>
+  readonly loadState: (db: DrizzleDatabase) => Effect.Effect<BotState | null, E>
+  readonly persistState: (db: DrizzleDatabase, state: BotState) => Effect.Effect<void, E>
+}
+
 const metaRowId = 1
 
 const resolveMigrationsFolder = Effect.gen(function*(_) {
@@ -42,14 +50,34 @@ const buildResolveMigrations = <E>(
     Effect.mapError((error) => onError(error instanceof Error ? error : String(error)))
   )
 
+// CHANGE: build migration config with optional schema override
+// WHY: allow running migrations without CREATE SCHEMA privileges
+// QUOTE(TZ): "Failed query: CREATE SCHEMA IF NOT EXISTS \"drizzle\""
+// REF: user-2026-01-18-migration-schema
+// SOURCE: n/a
+// FORMAT THEOREM: ∀f: cfg(f).migrationsFolder = f
+// PURITY: SHELL
+// INVARIANT: schema override is applied only when provided
+// COMPLEXITY: O(1)/O(1)
+const buildMigrationConfig = (
+  migrationsFolder: string,
+  migrationsSchema?: string
+): Parameters<typeof migrate>[1] =>
+  migrationsSchema
+    ? { migrationsFolder, migrationsSchema }
+    : { migrationsFolder }
+
 const makeRunMigrations = <E>(
   runDb: DbRunner<E>,
-  resolveMigrations: Effect.Effect<string, E, FileSystem.FileSystem | Path.Path>
+  resolveMigrations: Effect.Effect<string, E, FileSystem.FileSystem | Path.Path>,
+  migrationsSchema?: string
 ) =>
 (db: DrizzleDatabase): Effect.Effect<void, E, FileSystem.FileSystem | Path.Path> =>
   pipe(
     resolveMigrations,
-    Effect.flatMap((migrationsFolder) => runDb(() => migrate(db, { migrationsFolder }))),
+    Effect.flatMap((migrationsFolder) =>
+      runDb(() => migrate(db, buildMigrationConfig(migrationsFolder, migrationsSchema)))
+    ),
     Effect.asVoid
   )
 
@@ -115,14 +143,15 @@ const loadNormalizedState = <E>(
 // COMPLEXITY: O(n)/O(n)
 export const makeStateDb = <E>(
   runDb: DbRunner<E>,
-  onError: (error: Error | string) => E
-) => {
+  onError: (error: Error | string) => E,
+  migrationsSchema?: string
+): StateDb<E> => {
   const resolveMigrations = buildResolveMigrations(onError)
   const loadNormalized = loadNormalizedState(runDb, onError)
   const persist = makePersistState({ metaRowId, onError })
 
   return {
-    runMigrations: makeRunMigrations(runDb, resolveMigrations),
+    runMigrations: makeRunMigrations(runDb, resolveMigrations, migrationsSchema),
     loadState: (db: DrizzleDatabase): Effect.Effect<BotState | null, E> =>
       Effect.gen(function*(_) {
         const normalized = yield* _(loadNormalized(db))

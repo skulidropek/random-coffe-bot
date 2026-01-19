@@ -23,6 +23,22 @@ const botProfile = {
   lastName: "Coffee"
 }
 
+const makeAdminTelegramBase = (): Pick<
+  TelegramServiceShape,
+  "getChatMember" | "getChatMemberCount" | "getChat" | "getMe"
+> => ({
+  getChatMember: () => Effect.succeed("administrator"),
+  getChatMemberCount: () => Effect.succeed(0),
+  getChat: () =>
+    Effect.succeed({
+      id: ChatId("0"),
+      title: undefined,
+      username: undefined,
+      inviteLink: undefined
+    }),
+  getMe: Effect.succeed(botProfile)
+})
+
 const makeSingleParticipantChat = (params: {
   readonly chatId: ChatId
   readonly pollId: PollId
@@ -87,9 +103,9 @@ const makeAsyncTelegram = (
       Effect.zipRight(Deferred.await(pollDeferred))
     ),
   sendMessage: () => Effect.succeed(MessageId(0)),
+  sendMessageWithKeyboard: () => Effect.succeed(MessageId(0)),
   stopPoll: () => Effect.void,
-  getChatMember: () => Effect.succeed("administrator"),
-  getMe: Effect.succeed(botProfile)
+  ...makeAdminTelegramBase()
 })
 
 const makeClosedPollTelegramStub = (params: {
@@ -106,6 +122,7 @@ const makeClosedPollTelegramStub = (params: {
         messageCalls.push({ chatId, text })
         return MessageId(99)
       }),
+    sendMessageWithKeyboard: () => Effect.succeed(MessageId(99)),
     stopPoll: (chatId, messageId) =>
       pipe(
         Effect.sync(() => {
@@ -121,8 +138,7 @@ const makeClosedPollTelegramStub = (params: {
           )
         )
       ),
-    getChatMember: () => Effect.succeed("administrator"),
-    getMe: Effect.succeed(botProfile)
+    ...makeAdminTelegramBase()
   }
 
   return { telegram, messageCalls, stopPollCalls }

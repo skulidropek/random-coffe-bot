@@ -38,6 +38,7 @@ export type ChatState = {
   readonly seed: RngSeed
   readonly threadId: number | null
   readonly title: string | null
+  readonly inviteLink: string | null
   readonly lastSummaryAt: LocalDateString | null
 }
 
