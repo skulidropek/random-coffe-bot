@@ -5,7 +5,14 @@ import { migrate } from "drizzle-orm/node-postgres/migrator"
 import { Effect, pipe } from "effect"
 
 import type { BotState } from "../core/domain.js"
-import { botMetaTable, chatsTable, pairHistoryTable, participantsTable, pollsTable } from "./db/schema.js"
+import {
+  botMetaTable,
+  chatsTable,
+  pairHistoryTable,
+  participantsTable,
+  pollsTable,
+  profilesTable
+} from "./db/schema.js"
 import type { DrizzleDatabase } from "./drizzle.js"
 import { makePersistState } from "./state-store-db-persist.js"
 import { buildStateFromRows } from "./state-store-db-rows.js"
@@ -118,6 +125,7 @@ const loadNormalizedState = <E>(
     const chats = yield* _(runDb(() => db.select().from(chatsTable)))
     const polls = yield* _(runDb(() => db.select().from(pollsTable)))
     const participants = yield* _(runDb(() => db.select().from(participantsTable)))
+    const profiles = yield* _(runDb(() => db.select().from(profilesTable)))
     const histories = yield* _(runDb(() => db.select().from(pairHistoryTable)))
     return yield* _(
       buildStateFromRows({
@@ -125,6 +133,7 @@ const loadNormalizedState = <E>(
         chats,
         polls,
         participants,
+        profiles,
         histories,
         onError
       })

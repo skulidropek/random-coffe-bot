@@ -13,6 +13,14 @@ export type LeaderboardEntry = {
   readonly inviteLink?: string | undefined
 }
 
+export type DirectPairingMessage = {
+  readonly counterparts: ReadonlyArray<Participant>
+  readonly isOrganizer: boolean
+  readonly chatTitle: string | null
+  readonly chatInviteLink: string | null
+  readonly summaryLink: string | null
+}
+
 // CHANGE: define poll option labels
 // WHY: keep poll response text configurable in one place
 // QUOTE(TZ): "Yes! 🤗"
@@ -47,6 +55,57 @@ const formatPair = (pair: Pairing): string =>
   )
 
 const formatStandalone = (participant: Participant): string => `➪ ${mention(participant)}`
+
+const formatContactName = (participant: Participant): string =>
+  participant.lastName
+    ? `${participant.firstName} ${participant.lastName}`
+    : participant.firstName
+
+const formatContactHandle = (participant: Participant): string =>
+  participant.username ? `@${participant.username}` : "None"
+
+const formatContactLine = (participant: Participant): string =>
+  `${formatContactName(participant)} (${formatContactHandle(participant)})`
+
+const formatOrganizerHandles = (counterparts: ReadonlyArray<Participant>): string => {
+  if (counterparts.length === 0) {
+    return "None"
+  }
+  return counterparts
+    .map((participant) =>
+      participant.username ? `@${participant.username}` : `user-${participant.id}`
+    )
+    .join(", ")
+}
+
+const formatOrganizerNoun = (counterparts: ReadonlyArray<Participant>): string =>
+  counterparts.length === 1 ? "собеседнику" : "собеседникам"
+
+const formatGroupLabel = (
+  title: string | null,
+  inviteLink: string | null,
+  summaryLink: string | null
+): string => {
+  const normalizedLink = normalizeInviteLink(inviteLink ?? undefined)
+  const label = title ? escapeHtml(title) : "без названия"
+  const link = summaryLink ?? normalizedLink
+  if (!link) {
+    return title ? `«${label}»` : "(без названия)"
+  }
+  const anchorText = title ? escapeHtml(title) : "группа"
+  return `«<a href="${escapeHtml(link)}">${anchorText}</a>»`
+}
+
+const formatGroupTitle = (
+  title: string | null,
+  inviteLink: string | null,
+  summaryLink: string | null
+): string => `Группа: ${formatGroupLabel(title, inviteLink, summaryLink)}`
+
+const formatSummaryLinkLine = (summaryLink: string | null): string | null =>
+  summaryLink
+    ? `Итоги недели: <a href="${escapeHtml(summaryLink)}">ссылка</a>`
+    : null
 
 const formatDays = (days: number): string => (days === 1 ? "1 day" : `${days} days`)
 
@@ -278,6 +337,39 @@ export const formatPrivateStartReply = (): string =>
     "А если хочешь добавить бот в свою группу, жми \"Я организатор\".  Подскажу, как это сделать."
   ].join("\n")
 
+// CHANGE: label for the private "fill profile" button
+// WHY: keep button labels centralized for reuse
+// QUOTE(TZ): "кнопки"
+// REF: user-2026-01-19-private-start
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: label != ""
+// PURITY: CORE
+// INVARIANT: label is stable
+// COMPLEXITY: O(1)/O(1)
+export const privateStartProfileLabel = (): string => "Заполнить профиль"
+
+// CHANGE: legacy label for the private profile button
+// WHY: accept older button text sent before rename
+// QUOTE(TZ): "Заполнить анкету"
+// REF: user-2026-01-19-profile-flow
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: label != ""
+// PURITY: CORE
+// INVARIANT: label is stable
+// COMPLEXITY: O(1)/O(1)
+export const privateStartProfileAliasLabel = (): string => "Заполнить анкету"
+
+// CHANGE: label for the private "organizer" button
+// WHY: keep button labels centralized for reuse
+// QUOTE(TZ): "Я организатор"
+// REF: user-2026-01-19-private-start
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: label != ""
+// PURITY: CORE
+// INVARIANT: label is stable
+// COMPLEXITY: O(1)/O(1)
+export const privateStartOrganizerLabel = (): string => "Я организатор"
+
 // CHANGE: define button labels for private /start
 // WHY: keep button text centralized alongside other user-facing strings
 // QUOTE(TZ): "кнопки"
@@ -288,9 +380,106 @@ export const formatPrivateStartReply = (): string =>
 // INVARIANT: each row contains exactly one label
 // COMPLEXITY: O(1)/O(1)
 export const privateStartButtons = (): ReadonlyArray<ReadonlyArray<string>> => [
-  ["Заполнить профиль"],
-  ["Я организатор"]
+  [privateStartProfileLabel()],
+  [privateStartOrganizerLabel()]
 ]
+
+// CHANGE: format the profile flow intro message
+// WHY: explain next steps before opening the profile widget
+// QUOTE(TZ): "Отлично! Вот, какие дальнейшие шаги тебя ждут"
+// REF: user-2026-01-19-profile-flow
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: message != ""
+// PURITY: CORE
+// INVARIANT: steps are ordered
+// COMPLEXITY: O(1)/O(1)
+export const formatProfileIntroReply = (): string =>
+  [
+    "Отлично! Вот, какие дальнейшие шаги тебя ждут:",
+    "",
+    "1️⃣ Заполнение анкеты о себе",
+    "2️⃣ По желанию Предвыбор интересных собеседников",
+    "",
+    "А в ближайший понедельник бот подберет тебе пару среди всех участников."
+  ].join("\n")
+
+// CHANGE: format the profile widget instruction message
+// WHY: guide users to fill and submit the profile
+// QUOTE(TZ): "Спасибо! \nВремя заполнить анкету"
+// REF: user-2026-01-19-profile-flow
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: message != ""
+// PURITY: CORE
+// INVARIANT: contains next step instructions
+// COMPLEXITY: O(1)/O(1)
+export const formatProfileWidgetReply = (): string =>
+  [
+    "Спасибо! ",
+    "Время заполнить анкету 🪄",
+    "",
+    "Я буду присылать её твоим собеседникам каждую неделю.",
+    "",
+    "Скажу честно: лучше заполнить её подробно. Анкета — это первое впечатление о тебе. И с пустой или плохо заполненной анкетой вероятность встреч может снизиться ☝️",
+    "Заполни анкету в этом чате — просто напиши о себе текстом.",
+    "",
+    "Изменить анкету можно, снова нажав кнопку «Заполнить профиль»."
+  ].join("\n")
+
+// CHANGE: format the profile saved confirmation reply
+// WHY: confirm that the bot stored the profile text
+// QUOTE(TZ): "Почему он не сохранил информацию об профиле?"
+// REF: user-2026-01-21-profile-text
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: message != ""
+// PURITY: CORE
+// INVARIANT: reply is a single confirmation block
+// COMPLEXITY: O(1)/O(1)
+export const formatProfileSavedReply = (): string =>
+  [
+    "Готово! Я сохранил твою анкету.",
+    "Если захочешь изменить — нажми кнопку ниже.",
+    "",
+    "Если тебя устраивает твой профиль — можешь присоединяться к Random Coffee.",
+    "Напиши /leaderboard, чтобы узнать активные чаты для участия."
+  ].join("\n")
+
+// CHANGE: label for the profile redo button after saving
+// WHY: surface a clear action to re-open profile editing
+// QUOTE(TZ): "Вот тут должна была появится кнопка \"Заполнить профиль заново\""
+// REF: user-2026-01-22-profile-redo-button
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: label != ""
+// PURITY: CORE
+// INVARIANT: label is stable
+// COMPLEXITY: O(1)/O(1)
+export const profileRedoLabel = (): string => "Заполнить профиль заново"
+
+// CHANGE: format the organizer guide reply for private chats
+// WHY: explain how to add the bot to a group
+// QUOTE(TZ): "гайд как добавить бота в Группу"
+// REF: user-2026-01-19-organizer-guide
+// SOURCE: n/a
+// FORMAT THEOREM: forall _: message != ""
+// PURITY: CORE
+// INVARIANT: reply lists steps in order
+// COMPLEXITY: O(1)/O(1)
+export const formatOrganizerGuideReply = (): string =>
+  [
+    "Как добавить бота в группу:",
+    "1) Открой группу → Добавить участника → найди этого бота и добавь его.",
+    "2) Сделай бота администратором и включи права отправки сообщений и опросов.",
+    "3) Напиши в группе /start, чтобы бот начал работу.",
+    "",
+    "Админские команды в группе:",
+    "/settopic — выбрать топик для опросов (или основной чат).",
+    "/poll — запустить опрос прямо сейчас.",
+    "/summary — завершить опрос и подвести итог.",
+    "/nextpoll — узнать, когда следующий опрос.",
+    "/setlink ссылка — добавить ссылку на группу для /leaderboard.",
+    "/leaderboard — показать список групп по размеру.",
+    "",
+    "Если что-то не выходит — напиши сюда."
+  ].join("\n")
 
 // CHANGE: format the /start reply message
 // WHY: keep user-facing bot text centralized
@@ -307,6 +496,58 @@ export const formatStartReply = (): string =>
     "Polls: Friday/Saturday. Results: Monday.",
     "Make sure the bot can send polls in this chat."
   ].join("\n")
+
+// CHANGE: format the direct pairing message for private chats
+// WHY: keep weekly pair notifications consistent across DMs
+// QUOTE(TZ): "Твоя пара на эту неделю"
+// REF: user-2026-01-20-direct-dm
+// SOURCE: n/a
+// FORMAT THEOREM: forall c in counterparts: message contains c
+// PURITY: CORE
+// INVARIANT: organizer block appears only when isOrganizer = true
+// COMPLEXITY: O(n)/O(n)
+export const formatDirectPairingMessage = (
+  context: DirectPairingMessage
+): string => {
+  const summaryLine = formatSummaryLinkLine(context.summaryLink)
+  if (context.counterparts.length === 0) {
+    return [
+      `На этой неделе тебе не досталась пара в группе ${
+        formatGroupLabel(context.chatTitle, context.chatInviteLink, null)
+      }.`,
+      "Возможно, кто-то не успел проголосовать и напишет позже.",
+      ...(summaryLine ? [summaryLine] : []),
+      "",
+      "Посмотреть и поменять фото или данные своего профиля ты можешь в /help"
+    ].join("\n")
+  }
+
+  const counterpartLines = context.counterparts.map((participant) => formatContactLine(participant))
+  const organizerBlock = context.isOrganizer
+    ? [
+      "‼️  Ты рандомно выбран организатором этой встречи",
+      "Это значит, что на этой неделе ты пишешь первым! 😉",
+      `Напиши ${formatOrganizerNoun(context.counterparts)} в Телеграм - ${formatOrganizerHandles(context.counterparts)} - сразу, чтобы не забыть.`,
+      ""
+    ]
+    : []
+
+  return [
+    "Знакомься! 🎩",
+    formatGroupTitle(context.chatTitle, context.chatInviteLink, null),
+    ...(summaryLine ? [summaryLine] : []),
+    "Твоя пара на эту неделю:",
+    ...counterpartLines,
+    "",
+    "Чем занимается: None",
+    "Зацепки для начала разговора: None",
+    "",
+    ...organizerBlock,
+    "Посмотреть и поменять фото или данные своего профиля ты можешь в /help",
+    "",
+    "➪ Шпаргалка перед встречей"
+  ].join("\n")
+}
 
 // CHANGE: format the "no updates" Telegram log line
 // WHY: centralize log text
@@ -403,6 +644,41 @@ export const logPollCreated = (
   summaryDate: LocalDateString
 ): string => `Poll created for chat ${chatId} with summary date ${summaryDate}`
 
+// CHANGE: format the poll pin failure log line
+// WHY: report when the bot cannot pin the poll message
+// QUOTE(TZ): "кидал в закреп свой опросник всегда"
+// REF: user-2026-01-20-pin-poll
+// SOURCE: n/a
+// FORMAT THEOREM: forall c: message contains c
+// PURITY: CORE
+// INVARIANT: chat id is preserved
+// COMPLEXITY: O(1)/O(1)
+export const logPollPinFailed = (chatId: ChatId): string => `Poll pin failed for chat ${chatId}`
+
+// CHANGE: format the summary pin failure log line
+// WHY: report when the bot cannot pin the summary message
+// QUOTE(TZ): "итоги тоже есть смысл кинуть в закреп"
+// REF: user-2026-01-20-pin-summary
+// SOURCE: n/a
+// FORMAT THEOREM: forall c: message contains c
+// PURITY: CORE
+// INVARIANT: chat id is preserved
+// COMPLEXITY: O(1)/O(1)
+export const logSummaryPinFailed = (chatId: ChatId): string =>
+  `Summary pin failed for chat ${chatId}`
+
+// CHANGE: format the direct message failure log line
+// WHY: record when the bot cannot DM a participant
+// QUOTE(TZ): "если у бота есть чат с человеком"
+// REF: user-2026-01-20-direct-dm
+// SOURCE: n/a
+// FORMAT THEOREM: forall c: message contains c
+// PURITY: CORE
+// INVARIANT: chat id is preserved
+// COMPLEXITY: O(1)/O(1)
+export const logDirectMessageFailed = (chatId: ChatId): string =>
+  `Direct message failed for chat ${chatId}`
+
 // CHANGE: format the poll-closed log line
 // WHY: centralize log text
 // QUOTE(TZ): "Poll was already closed for chat X"
@@ -472,6 +748,11 @@ export const formatUpdateLog = (update: IncomingUpdate): string => {
   if (update.message) {
     parts.push(
       `message chatId=${update.message.chatId} type=${update.message.chatType} text="${update.message.text}"`
+    )
+  }
+  if (update.callbackQuery) {
+    parts.push(
+      `callback chatId=${update.callbackQuery.chatId} type=${update.callbackQuery.chatType} data="${update.callbackQuery.data}"`
     )
   }
   return parts.join(" | ")

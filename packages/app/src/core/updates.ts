@@ -25,11 +25,19 @@ export type ChatMessage = {
   readonly chatTitle?: string | undefined
 }
 
+export type CallbackQuery = {
+  readonly chatId: ChatId
+  readonly chatType: ChatType
+  readonly data: string
+  readonly messageThreadId?: number | undefined
+}
+
 export type IncomingUpdate = {
   readonly updateId: number
   readonly pollVote?: PollVote | undefined
   readonly chatSeen?: ChatSeen | undefined
   readonly message?: ChatMessage | undefined
+  readonly callbackQuery?: CallbackQuery | undefined
 }
 
 const applyChatMetadata = (
@@ -107,9 +115,10 @@ export const applyUpdates = (
     const withMessage = update.message
       ? applyMessage(withChatSeen, update.message)
       : withChatSeen
-    updated = update.pollVote
+    const withPoll = update.pollVote
       ? applyPollVote(withMessage, update.pollVote)
       : withMessage
+    updated = withPoll
     if (update.updateId > maxUpdateId) {
       maxUpdateId = update.updateId
     }

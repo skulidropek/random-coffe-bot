@@ -1,7 +1,14 @@
 import { Effect, pipe } from "effect"
 
 import type { BotState, PollState } from "../core/domain.js"
-import { botMetaTable, chatsTable, pairHistoryTable, participantsTable, pollsTable } from "./db/schema.js"
+import {
+  botMetaTable,
+  chatsTable,
+  pairHistoryTable,
+  participantsTable,
+  pollsTable,
+  profilesTable
+} from "./db/schema.js"
 import type { DrizzleDatabase } from "./drizzle.js"
 import type { DbRunner, DrizzleTransaction } from "./state-store-db-runner.js"
 import { makeDbRunner, runInTransaction } from "./state-store-db-runner.js"
@@ -30,6 +37,10 @@ type PersistRows = {
     firstName: string
     lastName: string | null
     username: string | null
+  }>
+  profileRows: Array<{
+    userId: number
+    text: string
   }>
   historyRows: Array<{
     chatId: string
@@ -81,6 +92,10 @@ const buildPersistRows = (
       username: participant.username ?? null
     }))
   )
+  const profileRows = Object.values(state.profiles).map((profile) => ({
+    userId: profile.userId,
+    text: profile.text
+  }))
   const historyRows = Object.entries(state.chats).flatMap(([chatId, chat]) =>
     Object.entries(chat.history).map(([pairKey, count]) => ({
       chatId,
@@ -95,7 +110,7 @@ const buildPersistRows = (
     updatedAt: new Date()
   }
 
-  return { chatRows, pollRows, participantRows, historyRows, metaRow }
+  return { chatRows, pollRows, participantRows, profileRows, historyRows, metaRow }
 }
 
 const runQuery = <E, A>(
@@ -109,6 +124,7 @@ const deleteAllRows = <E>(args: {
 }): Effect.Effect<void, E> =>
   pipe(
     runQuery(args.runDb, args.tx.delete(participantsTable)),
+    Effect.zipRight(runQuery(args.runDb, args.tx.delete(profilesTable))),
     Effect.zipRight(runQuery(args.runDb, args.tx.delete(pairHistoryTable))),
     Effect.zipRight(runQuery(args.runDb, args.tx.delete(pollsTable))),
     Effect.zipRight(runQuery(args.runDb, args.tx.delete(chatsTable))),
@@ -141,6 +157,16 @@ const insertDataRows = <E>(
           runQuery(
             args.runDb,
             args.tx.insert(participantsTable).values(args.rows.participantRows)
+          )
+      )
+    ),
+    Effect.zipRight(
+      insertWhen(
+        args.rows.profileRows.length > 0,
+        () =>
+          runQuery(
+            args.runDb,
+            args.tx.insert(profilesTable).values(args.rows.profileRows)
           )
       )
     ),

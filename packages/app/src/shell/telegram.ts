@@ -1,6 +1,6 @@
 import { Context, Data, Effect, pipe } from "effect"
 import { Bot, GrammyError, HttpError } from "grammy"
-import type { ReplyKeyboardMarkup, Update, User } from "grammy/types"
+import type { InlineKeyboardMarkup, ReplyKeyboardMarkup, Update, User } from "grammy/types"
 
 import { ChatId, MessageId, PollId, UserId } from "../core/brand.js"
 import type { ChatType, Participant } from "../core/domain.js"
@@ -74,11 +74,27 @@ const extractMessage = (update: Update): IncomingUpdate["message"] => {
   }
 }
 
+const extractCallbackQuery = (update: Update): IncomingUpdate["callbackQuery"] => {
+  const callback = update.callback_query
+  const data = callback?.data
+  const message = callback?.message
+  if (!callback || !data || !message) {
+    return undefined
+  }
+  return {
+    chatId: ChatId(message.chat.id.toString()),
+    chatType: toChatType(message.chat.type),
+    data,
+    messageThreadId: message.message_thread_id
+  }
+}
+
 const toIncomingUpdate = (update: Update): IncomingUpdate => ({
   updateId: update.update_id,
   chatSeen: extractChatSeen(update),
   pollVote: extractPollVote(update),
-  message: extractMessage(update)
+  message: extractMessage(update),
+  callbackQuery: extractCallbackQuery(update)
 })
 
 export type SendPollResult = {
@@ -87,6 +103,8 @@ export type SendPollResult = {
 }
 
 export type ReplyKeyboard = ReplyKeyboardMarkup
+export type InlineKeyboard = InlineKeyboardMarkup
+export type MessageKeyboard = ReplyKeyboardMarkup | InlineKeyboardMarkup
 
 export type ChatMemberStatus =
   | "creator"
@@ -115,6 +133,10 @@ export type TelegramServiceShape = {
     offset: number,
     timeoutSeconds: number
   ) => Effect.Effect<ReadonlyArray<IncomingUpdate>, TelegramError>
+  readonly pinChatMessage: (
+    chatId: ChatId,
+    messageId: MessageId
+  ) => Effect.Effect<void, TelegramError>
   readonly sendPoll: (
     chatId: ChatId,
     question: string,
@@ -129,7 +151,7 @@ export type TelegramServiceShape = {
   readonly sendMessageWithKeyboard: (
     chatId: ChatId,
     text: string,
-    keyboard: ReplyKeyboard,
+    keyboard: MessageKeyboard,
     threadId?: number
   ) => Effect.Effect<MessageId, TelegramError>
   readonly stopPoll: (
@@ -181,7 +203,7 @@ const makeGetUpdates = (
         bot.api.getUpdates({
           offset,
           timeout: timeoutSeconds,
-          allowed_updates: ["message", "poll_answer", "my_chat_member"]
+          allowed_updates: ["message", "poll_answer", "my_chat_member", "callback_query"]
         }),
       catch: (error) => mapError(error instanceof Error ? error : String(error))
     }),
@@ -326,6 +348,18 @@ const makeStopPoll = (
     Effect.asVoid
   )
 
+const makePinChatMessage = (
+  bot: Bot
+): TelegramServiceShape["pinChatMessage"] =>
+(chatId, messageId) =>
+  pipe(
+    Effect.tryPromise({
+      try: () => bot.api.pinChatMessage(chatId, messageId),
+      catch: (error) => mapError(error instanceof Error ? error : String(error))
+    }),
+    Effect.asVoid
+  )
+
 // CHANGE: construct a Telegram service backed by grammY
 // WHY: reuse a typed Telegram Bot API client instead of custom HTTP calls
 // QUOTE(TZ): "Используй значит grammy"
@@ -341,6 +375,7 @@ export const makeTelegramService = (token: string): TelegramServiceShape => {
 
   return {
     getUpdates: makeGetUpdates(bot),
+    pinChatMessage: makePinChatMessage(bot),
     sendPoll: makeSendPoll(bot),
     sendMessage: makeSendMessage(bot),
     sendMessageWithKeyboard: makeSendMessageWithKeyboard(bot),

@@ -1,20 +1,36 @@
 import { Effect, pipe } from "effect"
 
 import type { BotState } from "../core/domain.js"
-import { ensureChat, setThreadId } from "../core/state.js"
+import {
+  clearProfileEdit,
+  ensureChat,
+  isProfileEditActive,
+  markProfileEdit,
+  setThreadId,
+  setUserProfile
+} from "../core/state.js"
 import { isGroupChat } from "../core/telegram-commands.js"
 import {
+  formatOrganizerGuideReply,
   formatPrivateStartReply,
+  formatProfileIntroReply,
+  formatProfileSavedReply,
+  formatProfileWidgetReply,
   formatStartReply,
   formatUpdateLog,
   logStateSnapshot,
   logTelegramNoUpdates,
   logTelegramReceivedUpdates,
   logTelegramUpdate,
-  privateStartButtons
+  profileRedoLabel,
+  privateStartButtons,
+  privateStartOrganizerLabel,
+  privateStartProfileAliasLabel,
+  privateStartProfileLabel
 } from "../core/text.js"
-import type { ChatMessage, IncomingUpdate } from "../core/updates.js"
-import type { ReplyKeyboard, TelegramServiceShape } from "../shell/telegram.js"
+import { normalizeProfileText } from "../core/profiles.js"
+import type { CallbackQuery, ChatMessage, IncomingUpdate } from "../core/updates.js"
+import type { InlineKeyboard, TelegramServiceShape } from "../shell/telegram.js"
 import { allowAdminOnly, matchesTarget, parseCommandTarget } from "./command-utils.js"
 
 export const logUpdates = (
@@ -69,9 +85,8 @@ const sendStartReply = (
   )
 }
 
-const buildPrivateStartKeyboard = (): ReplyKeyboard => ({
-  keyboard: privateStartButtons().map((row) => row.map((text) => ({ text }))),
-  resize_keyboard: true
+const buildPrivateStartKeyboard = (): InlineKeyboard => ({
+  inline_keyboard: privateStartButtons().map((row) => row.map((text) => ({ text, callback_data: text })))
 })
 
 const sendPrivateStartReply = (
@@ -87,6 +102,101 @@ const sendPrivateStartReply = (
   )
 }
 
+const isOrganizerButton = (text: string): boolean => text.trim() === privateStartOrganizerLabel()
+
+const isProfileButton = (text: string): boolean => {
+  const trimmed = text.trim()
+  return trimmed === privateStartProfileLabel() ||
+    trimmed === privateStartProfileAliasLabel() ||
+    trimmed === profileRedoLabel()
+}
+
+const isCommandMessage = (text: string): boolean => text.trim().startsWith("/")
+
+const sendOrganizerGuideReply = (
+  message: ChatMessage,
+  telegram: TelegramServiceShape
+): Effect.Effect<void> => {
+  const text = formatOrganizerGuideReply()
+  return logAndIgnore(
+    pipe(
+      telegram.sendMessage(message.chatId, text),
+      Effect.asVoid
+    )
+  )
+}
+
+const sendProfileFlow = (
+  chatId: ChatMessage["chatId"],
+  threadId: ChatMessage["messageThreadId"],
+  telegram: TelegramServiceShape
+): Effect.Effect<void> =>
+  logAndIgnore(
+    Effect.gen(function*(_) {
+      yield* _(telegram.sendMessage(chatId, formatProfileIntroReply(), threadId))
+      yield* _(telegram.sendMessage(chatId, formatProfileWidgetReply(), threadId))
+    })
+  )
+
+const sendOrganizerGuideFromCallback = (
+  callback: CallbackQuery,
+  telegram: TelegramServiceShape
+): Effect.Effect<void> =>
+  logAndIgnore(
+    pipe(
+      telegram.sendMessage(callback.chatId, formatOrganizerGuideReply(), callback.messageThreadId),
+      Effect.asVoid
+    )
+  )
+
+const sendProfileSavedReply = (
+  message: ChatMessage,
+  telegram: TelegramServiceShape
+): Effect.Effect<void> => {
+  const text = formatProfileSavedReply()
+  const keyboard: InlineKeyboard = {
+    inline_keyboard: [
+      [{ text: profileRedoLabel(), callback_data: profileRedoLabel() }]
+    ]
+  }
+  return logAndIgnore(
+    pipe(
+      telegram.sendMessageWithKeyboard(message.chatId, text, keyboard, message.messageThreadId),
+      Effect.asVoid
+    )
+  )
+}
+
+const sendProfileFlowFromCallback = (
+  callback: CallbackQuery,
+  telegram: TelegramServiceShape
+): Effect.Effect<void> => sendProfileFlow(callback.chatId, callback.messageThreadId, telegram)
+
+const handleCallback = (
+  state: BotState,
+  update: IncomingUpdate,
+  telegram: TelegramServiceShape
+): Effect.Effect<BotState> =>
+  Effect.gen(function*(_) {
+    const callback = update.callbackQuery
+    if (!callback || callback.chatType !== "private") {
+      return state
+    }
+    if (callback.data === privateStartOrganizerLabel()) {
+      yield* _(sendOrganizerGuideFromCallback(callback, telegram))
+      return state
+    }
+    if (
+      callback.data === privateStartProfileLabel() ||
+      callback.data === privateStartProfileAliasLabel() ||
+      callback.data === profileRedoLabel()
+    ) {
+      const next = markProfileEdit(state, callback.chatId)
+      yield* _(sendProfileFlowFromCallback(callback, telegram))
+      return next
+    }
+    return state
+  })
 // CHANGE: guard /start and /help against non-admin users
 // WHY: prevent non-admin users from changing thread bindings via bot commands
 // QUOTE(TZ): n/a
@@ -140,7 +250,30 @@ const handleMessage = (
       return state
     }
     if (!isStartCommand(message.text, botUsername)) {
-      return state
+      if (isOrganizerButton(message.text)) {
+        yield* _(sendOrganizerGuideReply(message, telegram))
+        return state
+      }
+      if (isProfileButton(message.text)) {
+        const next = markProfileEdit(state, message.chatId)
+        yield* _(sendProfileFlow(message.chatId, message.messageThreadId, telegram))
+        return next
+      }
+      if (isCommandMessage(message.text)) {
+        return state
+      }
+      if (!isProfileEditActive(state, message.chatId)) {
+        return state
+      }
+      const author = message.from
+      const profileText = normalizeProfileText(message.text)
+      if (!author || !profileText) {
+        return state
+      }
+      const withProfile = setUserProfile(state, { userId: author.id, text: profileText })
+      const next = clearProfileEdit(withProfile, message.chatId)
+      yield* _(sendProfileSavedReply(message, telegram))
+      return next
     }
     yield* _(sendPrivateStartReply(message, telegram))
     return state
@@ -165,7 +298,8 @@ export const handleMessages = (
   Effect.gen(function*(_) {
     let updated = state
     for (const update of updates) {
-      updated = yield* _(handleMessage(updated, update, telegram, botUsername))
+      const afterCallback = yield* _(handleCallback(updated, update, telegram))
+      updated = yield* _(handleMessage(afterCallback, update, telegram, botUsername))
     }
     return updated
   })

@@ -10,6 +10,7 @@ import { emptyChatState } from "../../src/core/state.js"
 import type { IncomingUpdate } from "../../src/core/updates.js"
 import type { ChatMemberStatus } from "../../src/shell/telegram.js"
 import {
+  expectSummaryCalls,
   makeMessageUpdate,
   makeParticipant,
   makeStateStoreStub,
@@ -223,8 +224,8 @@ describe("commands", () => {
         })
       )
 
-      expect(messageCalls.length).toBe(1)
-      expect(messageCalls[0]?.text.includes("Pairs for Test Group")).toBe(true)
+      const { summaryCall } = expectSummaryCalls(messageCalls, chatId, 2)
+      expect(summaryCall.text.includes("Pairs for Test Group")).toBe(true)
       expect(next.chats[chatId]?.poll).toBeNull()
       expect(next.chats[chatId]?.lastSummaryAt).not.toBeNull()
     }))

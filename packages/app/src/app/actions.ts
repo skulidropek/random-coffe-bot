@@ -1,20 +1,30 @@
 import { Effect, Match, pipe } from "effect"
 
-import type { ChatId, LocalDateString, MessageId } from "../core/brand.js"
+import { ChatId, type LocalDateString, type MessageId } from "../core/brand.js"
 import type { BotState, ChatState } from "../core/domain.js"
-import { pairParticipants } from "../core/pairing.js"
+import {
+  assignOrganizers,
+  assignSoloParticipants,
+  pairParticipants,
+  type PairingAssignment
+} from "../core/pairing.js"
 import { listParticipants } from "../core/participants.js"
 import { applySummary, finishPoll, startPoll } from "../core/state.js"
 import {
+  formatDirectPairingMessage,
   formatPollClosedNoResults,
   formatPollQuestion,
   formatSummary,
+  logDirectMessageFailed,
   logPollAlreadyClosed,
   logPollCreated,
+  logPollPinFailed,
+  logSummaryPinFailed,
   logSummaryPairsSent,
   pollOptions,
   stopPollClosedMessageFragments
 } from "../core/text.js"
+import { formatTelegramMessageLink } from "../core/links.js"
 import type { StateStoreError, StateStoreShape } from "../shell/state-store.js"
 import type { TelegramError, TelegramServiceShape } from "../shell/telegram.js"
 
@@ -121,6 +131,7 @@ const buildSummaryMessage = (
   context: SummarizeContext,
   threadId: number | null | undefined,
   pairing: ReturnType<typeof pairParticipants>,
+  assignments: ReadonlyArray<PairingAssignment>,
   nextState: BotState
 ): Effect.Effect<BotState, TelegramError | StateStoreError> =>
   pipe(
@@ -129,9 +140,116 @@ const buildSummaryMessage = (
       formatSummary(context.chat.title, pairing.pairs, pairing.leftovers),
       threadId ?? undefined
     ),
-    Effect.flatMap(() => context.stateStore.set(nextState)),
-    Effect.tap(() => Effect.logInfo(logSummaryPairsSent(context.chatId))),
-    Effect.as(nextState)
+    Effect.flatMap((messageId) =>
+      pipe(
+        context.stateStore.set(nextState),
+        Effect.zipRight(
+          pinSummaryMessageBestEffort(context.telegram, context.chatId, messageId)
+        ),
+        Effect.zipRight(
+          sendDirectPairingMessages(
+            context.telegram,
+            assignments,
+            context.chat.title,
+            context.chat.inviteLink,
+            formatTelegramMessageLink(
+              context.chatId,
+              messageId,
+              threadId ?? null
+            )
+          )
+        ),
+        Effect.as(nextState)
+      )
+    ),
+    Effect.tap(() => Effect.logInfo(logSummaryPairsSent(context.chatId)))
+  )
+
+// CHANGE: pin a newly created poll message
+// WHY: keep the active poll visible in the chat
+// QUOTE(TZ): "Добавь в бота что бы он кидал в закреп свой опросник всегда"
+// REF: user-2026-01-20-pin-poll
+// SOURCE: n/a
+// FORMAT THEOREM: forall c,m: attempt_pin(c,m) -> logged(c) | pinned(c,m)
+// PURITY: SHELL
+// EFFECT: Effect<void, never, never>
+// INVARIANT: a pin attempt is made exactly once per poll creation
+// COMPLEXITY: O(1)/O(1)
+const pinPollMessageBestEffort = (
+  telegram: TelegramServiceShape,
+  chatId: ChatId,
+  messageId: MessageId
+): Effect.Effect<void> =>
+  pipe(
+    telegram.pinChatMessage(chatId, messageId),
+    Effect.tapError(() => Effect.logWarning(logPollPinFailed(chatId))),
+    Effect.catchAll(() => Effect.void)
+  )
+
+// CHANGE: pin a summary message after sending results
+// WHY: keep weekly outcomes visible in the chat
+// QUOTE(TZ): "итоги тоже есть смысл кинуть в закреп"
+// REF: user-2026-01-20-pin-summary
+// SOURCE: n/a
+// FORMAT THEOREM: forall c,m: attempt_pin(c,m) -> logged(c) | pinned(c,m)
+// PURITY: SHELL
+// EFFECT: Effect<void, never, never>
+// INVARIANT: a pin attempt is made exactly once per summary message
+// COMPLEXITY: O(1)/O(1)
+const pinSummaryMessageBestEffort = (
+  telegram: TelegramServiceShape,
+  chatId: ChatId,
+  messageId: MessageId
+): Effect.Effect<void> =>
+  pipe(
+    telegram.pinChatMessage(chatId, messageId),
+    Effect.tapError(() => Effect.logWarning(logSummaryPinFailed(chatId))),
+    Effect.catchAll(() => Effect.void)
+  )
+
+// CHANGE: send a direct pairing message to a participant
+// WHY: notify participants in private chat when a pair is formed
+// QUOTE(TZ): "если у бота есть чат с человеком"
+// REF: user-2026-01-20-direct-dm
+// SOURCE: n/a
+// FORMAT THEOREM: forall a: dm(a) -> sent(a) | logged(a)
+// PURITY: SHELL
+// EFFECT: Effect<void, never, never>
+// INVARIANT: a DM attempt is made exactly once per assignment
+// COMPLEXITY: O(1)/O(1)
+const sendDirectMessageBestEffort = (
+  telegram: TelegramServiceShape,
+  assignment: PairingAssignment,
+  chatTitle: string | null,
+  chatInviteLink: string | null,
+  summaryLink: string | null
+): Effect.Effect<void> => {
+  const chatId = ChatId(`${assignment.participant.id}`)
+  return pipe(
+    telegram.sendMessage(
+      chatId,
+      formatDirectPairingMessage({
+        counterparts: assignment.counterparts,
+        isOrganizer: assignment.isOrganizer,
+        chatTitle,
+        chatInviteLink,
+        summaryLink
+      })
+    ),
+    Effect.tapError(() => Effect.logWarning(logDirectMessageFailed(chatId))),
+    Effect.catchAll(() => Effect.void)
+  )
+}
+
+const sendDirectPairingMessages = (
+  telegram: TelegramServiceShape,
+  assignments: ReadonlyArray<PairingAssignment>,
+  chatTitle: string | null,
+  chatInviteLink: string | null,
+  summaryLink: string | null
+): Effect.Effect<void> =>
+  Effect.forEach(assignments, (assignment) =>
+    sendDirectMessageBestEffort(telegram, assignment, chatTitle, chatInviteLink, summaryLink), { discard: true }
   )
 
 // CHANGE: send a poll and persist state for a chat
@@ -164,6 +282,9 @@ export const createPoll = (
       })
       return pipe(
         context.stateStore.set(nextState),
+        Effect.zipRight(
+          pinPollMessageBestEffort(context.telegram, context.chatId, result.messageId)
+        ),
         Effect.as(nextState)
       )
     }),
@@ -189,12 +310,28 @@ export const summarize = (
     context.chat.history,
     context.chat.seed
   )
+  const organizerAssignments = assignOrganizers(pairing.pairs, pairing.seed)
+  const soloAssignments = assignSoloParticipants(pairing.leftovers)
+  const directAssignments = [
+    ...organizerAssignments.assignments,
+    ...soloAssignments
+  ]
+  const pairingWithOrganizerSeed = {
+    ...pairing,
+    seed: organizerAssignments.seed
+  }
   const threadId = context.chat.poll?.threadId ?? context.chat.threadId
   const stopPollEffect = buildStopPollEffect(context)
-  const nextState = buildSummaryState(context, pairing)
+  const nextState = buildSummaryState(context, pairingWithOrganizerSeed)
   const closedState = buildClosedState(context)
   const sendClosedMessage = sendClosedNotice(context, threadId, closedState)
-  const sendSummaryMessage = buildSummaryMessage(context, threadId, pairing, nextState)
+  const sendSummaryMessage = buildSummaryMessage(
+    context,
+    threadId,
+    pairing,
+    directAssignments,
+    nextState
+  )
   return pipe(
     stopPollEffect,
     Effect.flatMap((outcome) =>

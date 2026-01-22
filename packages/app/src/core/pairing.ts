@@ -60,6 +60,12 @@ type PairBuild = {
   readonly seed: RngSeed
 }
 
+export type PairingAssignment = {
+  readonly participant: Participant
+  readonly counterparts: ReadonlyArray<Participant>
+  readonly isOrganizer: boolean
+}
+
 const buildPairs = (
   participants: ReadonlyArray<Participant>,
   history: PairHistory,
@@ -109,6 +115,79 @@ export const pairParticipants = (
 
   return { pairs: built.pairs, leftovers: built.remaining, seed: built.seed }
 }
+
+type OrganizerBuild = {
+  readonly assignments: ReadonlyArray<PairingAssignment>
+  readonly seed: RngSeed
+}
+
+const buildAssignments = (
+  members: ReadonlyArray<Participant>,
+  seed: RngSeed
+): OrganizerBuild => {
+  if (members.length === 0) {
+    return { assignments: [], seed }
+  }
+  const picked = randomInt(seed, members.length)
+  const organizer = members[picked.value] ?? members[0]
+  const assignments = members.map((participant) => ({
+    participant,
+    counterparts: members.filter((candidate) => candidate.id !== participant.id),
+    isOrganizer: organizer ? organizer.id === participant.id : false
+  }))
+  return { assignments, seed: picked.seed }
+}
+
+const assignOrganizersForPair = (
+  pair: Pairing,
+  seed: RngSeed
+): OrganizerBuild =>
+  Match.value(pair).pipe(
+    Match.when({ kind: "pair" }, (value) => buildAssignments(value.members, seed)),
+    Match.when({ kind: "triple" }, (value) => buildAssignments(value.members, seed)),
+    Match.exhaustive
+  )
+
+// CHANGE: assign a random organizer for each pairing
+// WHY: decide who starts the conversation in direct messages
+// QUOTE(TZ): "Ты рандомно выбран организатором этой встречи"
+// REF: user-2026-01-20-direct-dm
+// SOURCE: n/a
+// FORMAT THEOREM: forall p in pairs: exists o in members(p): isOrganizer(o)
+// PURITY: CORE
+// INVARIANT: each participant has exactly one assignment per pairing
+// COMPLEXITY: O(n)/O(n)
+export const assignOrganizers = (
+  pairs: ReadonlyArray<Pairing>,
+  seed: RngSeed
+): OrganizerBuild => {
+  let nextSeed = seed
+  let assignments: ReadonlyArray<PairingAssignment> = []
+  for (const pair of pairs) {
+    const result = assignOrganizersForPair(pair, nextSeed)
+    nextSeed = result.seed
+    assignments = [...assignments, ...result.assignments]
+  }
+  return { assignments, seed: nextSeed }
+}
+
+// CHANGE: create assignments for participants without a counterpart
+// WHY: notify solo participants after summary runs
+// QUOTE(TZ): "если ты один то тебе сообщение тоже бы приходило"
+// REF: user-2026-01-20-direct-dm-solo
+// SOURCE: n/a
+// FORMAT THEOREM: forall p in participants: counterparts(p) = []
+// PURITY: CORE
+// INVARIANT: isOrganizer is false for solo assignments
+// COMPLEXITY: O(n)/O(n)
+export const assignSoloParticipants = (
+  participants: ReadonlyArray<Participant>
+): ReadonlyArray<PairingAssignment> =>
+  participants.map((participant) => ({
+    participant,
+    counterparts: [],
+    isOrganizer: false
+  }))
 
 const addPairHistory = (history: PairHistory, pair: Pairing): PairHistory =>
   Match.value(pair).pipe(

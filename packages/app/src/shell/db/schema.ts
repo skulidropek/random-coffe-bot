@@ -46,6 +46,14 @@ export const participantsTable = pgTable(
   ]
 )
 
+export const profilesTable = pgTable(
+  "profiles",
+  {
+    userId: bigint("user_id", { mode: "number" }).notNull().primaryKey(),
+    text: text("text").notNull()
+  }
+)
+
 export const pairHistoryTable = pgTable(
   "pair_history",
   {
@@ -62,4 +70,5 @@ export type BotMetaRow = typeof botMetaTable.$inferSelect
 export type ChatRow = typeof chatsTable.$inferSelect
 export type PollRow = typeof pollsTable.$inferSelect
 export type ParticipantRow = typeof participantsTable.$inferSelect
+export type ProfileRow = typeof profilesTable.$inferSelect
 export type PairHistoryRow = typeof pairHistoryTable.$inferSelect

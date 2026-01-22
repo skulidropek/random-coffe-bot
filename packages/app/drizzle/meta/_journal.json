@@ -36,6 +36,13 @@
       "when": 1768809158568,
       "tag": "0004_add_chat_invite_link",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1768994400218,
+      "tag": "0005_add_profiles",
+      "breakpoints": true
     }
   ]
 }

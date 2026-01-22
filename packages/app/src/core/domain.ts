@@ -11,6 +11,15 @@ export type Participant = {
 
 export type ParticipantsById = Readonly<Record<string, Participant>>
 
+export type UserProfile = {
+  readonly userId: UserId
+  readonly text: string
+}
+
+export type UserProfiles = Readonly<Record<string, UserProfile>>
+
+export type PendingProfileEdits = Readonly<Record<string, true>>
+
 export type PollState = {
   readonly pollId: PollId
   readonly messageId: MessageId
@@ -51,6 +60,8 @@ export type BotState = {
   readonly pollIndex: PollIndex
   readonly updateOffset: number
   readonly seed: RngSeed
+  readonly profiles: UserProfiles
+  readonly pendingProfileEdits: PendingProfileEdits
 }
 
 // CHANGE: provide a pure initializer for bot state
@@ -66,5 +77,7 @@ export const emptyState = (seed: RngSeed): BotState => ({
   chats: {},
   pollIndex: {},
   updateOffset: 0,
-  seed
+  seed,
+  profiles: {},
+  pendingProfileEdits: {}
 })

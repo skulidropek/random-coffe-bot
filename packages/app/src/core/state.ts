@@ -1,5 +1,17 @@
 import type { ChatId, LocalDateString, RngSeed } from "./brand.js"
-import type { BotState, ChatState, Pairing, PollState } from "./domain.js"
+import type {
+  BotState,
+  ChatState,
+  Pairing,
+  PollState,
+  UserProfile
+} from "./domain.js"
+import {
+  clearProfileEditPending,
+  isProfileEditPending,
+  markProfileEditPending,
+  upsertProfile
+} from "./profiles.js"
 import { updateHistory } from "./pairing.js"
 import { nextSeed } from "./rng.js"
 
@@ -89,6 +101,69 @@ export const ensureChat = (state: BotState, chatId: ChatId): BotState => {
     }
   }
 }
+
+// CHANGE: persist a user profile into bot state
+// WHY: keep private profile text available for weekly pair messages
+// QUOTE(TZ): "Профиль просто внутри бота делается Там текст и всё"
+// REF: user-2026-01-21-profile-text
+// SOURCE: n/a
+// FORMAT THEOREM: forall s,p: setProfile(s,p).profiles[key(p)] = p
+// PURITY: CORE
+// INVARIANT: only profiles map is updated
+// COMPLEXITY: O(1)/O(n)
+export const setUserProfile = (
+  state: BotState,
+  profile: UserProfile
+): BotState => ({
+  ...state,
+  profiles: upsertProfile(state.profiles, profile)
+})
+
+// CHANGE: mark profile editing for a private chat
+// WHY: only capture profile text after explicit request
+// QUOTE(TZ): "Заполнить профиль и изменить описание это по сути одно и тоже"
+// REF: user-2026-01-21-profile-edit-unify
+// SOURCE: n/a
+// FORMAT THEOREM: forall s,id: mark(s,id).pending[id] = true
+// PURITY: CORE
+// INVARIANT: pending profile edits are tracked per chat
+// COMPLEXITY: O(1)/O(n)
+export const markProfileEdit = (
+  state: BotState,
+  chatId: ChatId
+): BotState => ({
+  ...state,
+  pendingProfileEdits: markProfileEditPending(state.pendingProfileEdits, chatId)
+})
+
+// CHANGE: clear profile editing flag for a private chat
+// WHY: stop consuming messages after saving profile text
+// QUOTE(TZ): "Заполнить профиль и изменить описание это по сути одно и тоже"
+// REF: user-2026-01-21-profile-edit-unify
+// SOURCE: n/a
+// FORMAT THEOREM: forall s,id: clear(s,id).pending[id] = false
+// PURITY: CORE
+// INVARIANT: other pending flags remain unchanged
+// COMPLEXITY: O(n)/O(n)
+export const clearProfileEdit = (
+  state: BotState,
+  chatId: ChatId
+): BotState => ({
+  ...state,
+  pendingProfileEdits: clearProfileEditPending(state.pendingProfileEdits, chatId)
+})
+
+// CHANGE: check if profile editing is active for a private chat
+// WHY: ignore unrelated messages in private chats
+// QUOTE(TZ): "Заполнить профиль и изменить описание это по сути одно и тоже"
+// REF: user-2026-01-21-profile-edit-unify
+// SOURCE: n/a
+// FORMAT THEOREM: forall s,id: isPending(s,id) = pending[id]
+// PURITY: CORE
+// INVARIANT: returns false when pending flag is absent
+// COMPLEXITY: O(1)/O(1)
+export const isProfileEditActive = (state: BotState, chatId: ChatId): boolean =>
+  isProfileEditPending(state.pendingProfileEdits, chatId)
 
 // CHANGE: update the target thread for a chat
 // WHY: allow admins to choose where polls and summaries are posted

@@ -100,7 +100,9 @@ const runOnce = (
       yield* _(logUpdates(updates))
       const updated = applyUpdates(current, updates)
       yield* _(logState(updated))
-      const afterMessages = yield* _(handleMessages(updated, updates, telegram, botUsername))
+      const afterMessages = yield* _(
+        handleMessages(updated, updates, telegram, botUsername)
+      )
       if (Object.keys(afterMessages.chats).length === 0) {
         yield* _(Effect.logWarning(logNoRegisteredGroupChats()))
       }

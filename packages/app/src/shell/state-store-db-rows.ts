@@ -8,10 +8,13 @@ import type {
   Participant,
   ParticipantsById,
   PollIndex,
-  PollState
+  PollState,
+  UserProfile,
+  UserProfiles
 } from "../core/domain.js"
 import { upsertParticipant } from "../core/participants.js"
-import type { ChatRow, PairHistoryRow, ParticipantRow, PollRow } from "./db/schema.js"
+import { upsertProfile } from "../core/profiles.js"
+import type { ChatRow, PairHistoryRow, ParticipantRow, PollRow, ProfileRow } from "./db/schema.js"
 
 type ErrorHandler<E> = (error: Error | string) => E
 
@@ -46,6 +49,11 @@ const toPollState = <E>(args: {
       threadId: args.row.threadId ?? null
     }))
   )
+
+const toProfile = (row: ProfileRow): UserProfile => ({
+  userId: UserId(row.userId),
+  text: row.text
+})
 
 const toChatState = <E>(args: {
   readonly row: ChatRow
@@ -113,6 +121,12 @@ const buildHistoryByChat = <E>(args: {
     return historyByChat
   })
 
+const buildProfiles = (rows: ReadonlyArray<ProfileRow>): UserProfiles =>
+  rows.reduce<UserProfiles>(
+    (profiles, row) => upsertProfile(profiles, toProfile(row)),
+    {}
+  )
+
 const buildPolls = <E>(args: {
   readonly rows: ReadonlyArray<PollRow>
   readonly chatIds: ReadonlySet<string>
@@ -167,6 +181,7 @@ export type StateRowsInput<E> = {
   readonly chats: ReadonlyArray<ChatRow>
   readonly polls: ReadonlyArray<PollRow>
   readonly participants: ReadonlyArray<ParticipantRow>
+  readonly profiles: ReadonlyArray<ProfileRow>
   readonly histories: ReadonlyArray<PairHistoryRow>
   readonly onError: ErrorHandler<E>
 }
@@ -196,6 +211,7 @@ export const buildStateFromRows = <E>(
         onError: input.onError
       })
     )
+    const profiles = buildProfiles(input.profiles)
     const historyByChat = yield* _(
       buildHistoryByChat({
         rows: input.histories,
@@ -217,6 +233,8 @@ export const buildStateFromRows = <E>(
       chats: chatStates,
       pollIndex,
       updateOffset: Math.max(0, input.meta.updateOffset),
-      seed: RngSeed(input.meta.seed)
+      seed: RngSeed(input.meta.seed),
+      profiles,
+      pendingProfileEdits: {}
     }
   })

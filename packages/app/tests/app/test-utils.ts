@@ -1,3 +1,4 @@
+import { expect } from "@effect/vitest"
 import { Effect } from "effect"
 
 import { MessageId, PollId, UserId } from "../../src/core/brand.js"
@@ -6,7 +7,7 @@ import type { BotState, ChatState, ChatType, Participant } from "../../src/core/
 import { emptyState } from "../../src/core/domain.js"
 import type { IncomingUpdate } from "../../src/core/updates.js"
 import type { StateStoreShape } from "../../src/shell/state-store.js"
-import type { ChatInfo, ChatMemberStatus, ReplyKeyboard, TelegramServiceShape } from "../../src/shell/telegram.js"
+import type { ChatInfo, ChatMemberStatus, MessageKeyboard, TelegramServiceShape } from "../../src/shell/telegram.js"
 
 export type PollCall = {
   readonly chatId: ChatId
@@ -24,11 +25,16 @@ export type MessageCall = {
 export type MessageWithKeyboardCall = {
   readonly chatId: ChatId
   readonly text: string
-  readonly keyboard: ReplyKeyboard
+  readonly keyboard: MessageKeyboard
   readonly threadId?: number | undefined
 }
 
 export type StopPollCall = {
+  readonly chatId: ChatId
+  readonly messageId: MessageId
+}
+
+export type PinCall = {
   readonly chatId: ChatId
   readonly messageId: MessageId
 }
@@ -102,6 +108,7 @@ export const makeTelegramStub = (options?: TelegramStubOverrides) => {
   const messageCalls: Array<MessageCall> = []
   const messageWithKeyboardCalls: Array<MessageWithKeyboardCall> = []
   const stopPollCalls: Array<StopPollCall> = []
+  const pinCalls: Array<PinCall> = []
   const memberCalls: Array<MemberCall> = []
   const memberCountCalls: Array<MemberCountCall> = []
   const chatCalls: Array<ChatCall> = []
@@ -114,6 +121,10 @@ export const makeTelegramStub = (options?: TelegramStubOverrides) => {
 
   const telegram: TelegramServiceShape = {
     getUpdates: () => Effect.succeed([]),
+    pinChatMessage: (chatId, messageId) =>
+      Effect.sync(() => {
+        pinCalls.push({ chatId, messageId })
+      }),
     sendPoll: (chatId, question, optionsList, threadId) =>
       Effect.sync(() => {
         pollCalls.push({
@@ -178,6 +189,7 @@ export const makeTelegramStub = (options?: TelegramStubOverrides) => {
     messageCalls,
     messageWithKeyboardCalls,
     stopPollCalls,
+    pinCalls,
     memberCalls,
     memberCountCalls,
     chatCalls,
@@ -253,3 +265,31 @@ export const makeMessageUpdate = (params: {
     chatTitle: params.chatTitle
   }
 })
+
+export const makeCallbackUpdate = (params: {
+  readonly updateId: number
+  readonly chatId: ChatId
+  readonly data: string
+  readonly chatType?: ChatType | undefined
+  readonly threadId?: number | undefined
+}): IncomingUpdate => ({
+  updateId: params.updateId,
+  callbackQuery: {
+    chatId: params.chatId,
+    chatType: params.chatType ?? "private",
+    data: params.data,
+    messageThreadId: params.threadId
+  }
+})
+
+export const expectSummaryCalls = (
+  messageCalls: ReadonlyArray<MessageCall>,
+  chatId: ChatId,
+  expectedDirect: number
+): { readonly summaryCall: MessageCall } => {
+  const summaryCall = messageCalls.find((call) => call.chatId === chatId)
+  const directCalls = messageCalls.filter((call) => call.chatId !== chatId)
+  expect(summaryCall).not.toBeUndefined()
+  expect(directCalls.length).toBe(expectedDirect)
+  return { summaryCall: summaryCall as MessageCall }
+}

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Deferred, Effect, Fiber, pipe } from "effect"
-
 import { createPoll, summarize } from "../../src/app/actions.js"
 import { ChatId, LocalDateString, MessageId, PollId, RngSeed, UserId } from "../../src/core/brand.js"
 import type { BotState, ChatState } from "../../src/core/domain.js"
@@ -8,21 +7,21 @@ import { upsertParticipant } from "../../src/core/participants.js"
 import { emptyChatState } from "../../src/core/state.js"
 import { formatPollClosedNoResults } from "../../src/core/text.js"
 import { TelegramApiError, type TelegramServiceShape } from "../../src/shell/telegram.js"
-import { makeStateStoreStub, makeStateWithChat, makeStateWithPoll, makeTelegramStub } from "./test-utils.js"
+import {
+  expectSummaryCalls,
+  makeStateStoreStub,
+  makeStateWithChat,
+  makeStateWithPoll,
+  makeTelegramStub
+} from "./test-utils.js"
 
-const makeParticipant = (id: number, name: string, username: string) => ({
-  id: UserId(id),
-  firstName: name,
-  username
-})
-
+const makeParticipant = (id: number, name: string, username: string) => ({ id: UserId(id), firstName: name, username })
 const botProfile = {
   id: UserId(1),
   username: "random_coffee_bot",
   firstName: "Random",
   lastName: "Coffee"
 }
-
 const makeAdminTelegramBase = (): Pick<
   TelegramServiceShape,
   "getChatMember" | "getChatMemberCount" | "getChat" | "getMe"
@@ -38,7 +37,6 @@ const makeAdminTelegramBase = (): Pick<
     }),
   getMe: Effect.succeed(botProfile)
 })
-
 const makeSingleParticipantChat = (params: {
   readonly chatId: ChatId
   readonly pollId: PollId
@@ -66,7 +64,6 @@ const makeSingleParticipantChat = (params: {
   const state = makeStateWithPoll(params.chatId, chat, params.pollId, params.seed)
   return { chat, state }
 }
-
 const runSummarize = (params: {
   readonly state: BotState
   readonly chatId: ChatId
@@ -76,7 +73,7 @@ const runSummarize = (params: {
   readonly messageId: MessageId
 }) =>
   Effect.gen(function*(_) {
-    const { messageCalls, stopPollCalls, telegram } = makeTelegramStub({
+    const { messageCalls, pinCalls, stopPollCalls, telegram } = makeTelegramStub({
       pollResult: { pollId: params.pollId, messageId: params.messageId }
     })
     const { stateStore } = makeStateStoreStub(params.state)
@@ -90,13 +87,13 @@ const runSummarize = (params: {
         stateStore
       })
     )
-    return { next, messageCalls, stopPollCalls }
+    return { next, messageCalls, pinCalls, stopPollCalls }
   })
-
 const makeAsyncTelegram = (
   pollDeferred: Deferred.Deferred<{ readonly pollId: PollId; readonly messageId: MessageId }>
 ): TelegramServiceShape => ({
   getUpdates: () => Effect.succeed([]),
+  pinChatMessage: () => Effect.void,
   sendPoll: (chatId, question, options, threadId) =>
     pipe(
       Effect.sync(() => ({ chatId, question, options, threadId })),
@@ -107,7 +104,6 @@ const makeAsyncTelegram = (
   stopPoll: () => Effect.void,
   ...makeAdminTelegramBase()
 })
-
 const makeClosedPollTelegramStub = (params: {
   readonly pollId: PollId
   readonly messageId: MessageId
@@ -116,6 +112,7 @@ const makeClosedPollTelegramStub = (params: {
   const stopPollCalls: Array<{ readonly chatId: ChatId; readonly messageId: MessageId }> = []
   const telegram: TelegramServiceShape = {
     getUpdates: () => Effect.succeed([]),
+    pinChatMessage: () => Effect.void,
     sendPoll: () => Effect.succeed({ pollId: params.pollId, messageId: params.messageId }),
     sendMessage: (chatId, text) =>
       Effect.sync(() => {
@@ -140,10 +137,8 @@ const makeClosedPollTelegramStub = (params: {
       ),
     ...makeAdminTelegramBase()
   }
-
   return { telegram, messageCalls, stopPollCalls }
 }
-
 describe("actions", () => {
   it.effect("createPoll stores poll and calls sendPoll", () =>
     Effect.gen(function*(_) {
@@ -155,9 +150,8 @@ describe("actions", () => {
       }
       const state = makeStateWithChat(chatId, chat, RngSeed(1))
       const summaryDate = LocalDateString("2026-01-12")
-      const { pollCalls, telegram } = makeTelegramStub()
+      const { pinCalls, pollCalls, telegram } = makeTelegramStub()
       const { setCalls, stateStore } = makeStateStoreStub(state)
-
       const next = yield* _(
         createPoll({
           state,
@@ -168,15 +162,15 @@ describe("actions", () => {
           stateStore
         })
       )
-
       expect(pollCalls.length).toBe(1)
+      expect(pinCalls.length).toBe(1)
+      expect(pinCalls[0]?.messageId).toBe(MessageId(100))
       expect(pollCalls[0]?.options.length).toBe(2)
       expect(pollCalls[0]?.question.startsWith("Hi! Will you join Random Coffee")).toBe(true)
       expect(next.chats[chatId]?.poll?.summaryDate).toBe(summaryDate)
       expect(Object.keys(next.pollIndex).length).toBe(1)
       expect(setCalls.length).toBe(1)
     }))
-
   it.effect("summarize clears poll, updates history, and sets lastSummaryAt", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-200")
@@ -198,7 +192,7 @@ describe("actions", () => {
         title: "Unicorn Embassy | Georgia"
       }
       const state = makeStateWithPoll(chatId, chat, pollId, RngSeed(2))
-      const { messageCalls, next, stopPollCalls } = yield* _(
+      const { messageCalls, next, pinCalls, stopPollCalls } = yield* _(
         runSummarize({
           state,
           chatId,
@@ -208,17 +202,12 @@ describe("actions", () => {
           messageId: MessageId(10)
         })
       )
-
-      expect(messageCalls.length).toBe(1)
-      expect(messageCalls[0]?.threadId).toBe(99)
-      expect(messageCalls[0]?.text.includes("Pairs for Unicorn Embassy | Georgia")).toBe(true)
-      expect(stopPollCalls.length).toBe(1)
-      expect(next.chats[chatId]?.poll).toBeNull()
-      expect(Object.keys(next.chats[chatId]?.participants ?? {}).length).toBe(0)
+      const { summaryCall } = expectSummaryCalls(messageCalls, chatId, 2)
+      expect(summaryCall.text.includes("Pairs for Unicorn Embassy | Georgia")).toBe(true)
+      expect([pinCalls.length, stopPollCalls.length]).toEqual([1, 1])
+      expect([next.chats[chatId]?.poll, Object.keys(next.chats[chatId]?.participants ?? {}).length]).toEqual([null, 0])
       expect(next.chats[chatId]?.lastSummaryAt).toBe(summaryDate)
-      expect(Object.keys(next.pollIndex).length).toBe(0)
     }))
-
   it.effect("summarize ignores already closed poll errors", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-202")
@@ -236,7 +225,6 @@ describe("actions", () => {
         pollId,
         messageId: MessageId(12)
       })
-
       const next = yield* _(
         summarize({
           state,
@@ -247,7 +235,6 @@ describe("actions", () => {
           stateStore
         })
       )
-
       expect(next.chats[chatId]?.poll).toBeNull()
       expect(next.chats[chatId]?.lastSummaryAt).toBeNull()
       expect(Object.keys(next.chats[chatId]?.participants ?? {}).length).toBe(0)
@@ -257,7 +244,6 @@ describe("actions", () => {
       expect(messageCalls[0]?.text).toBe(formatPollClosedNoResults())
       expect(setCalls.length).toBe(1)
     }))
-
   it.effect("summarize mentions leftover participants when no pairs", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-201")
@@ -280,13 +266,11 @@ describe("actions", () => {
           messageId: MessageId(11)
         })
       )
-
-      expect(messageCalls.length).toBe(1)
-      expect(messageCalls[0]?.text.includes("Not enough participants to make pairs")).toBe(true)
-      expect(messageCalls[0]?.text.includes("@alice")).toBe(true)
+      const { summaryCall } = expectSummaryCalls(messageCalls, chatId, 1)
+      expect(summaryCall.text.includes("Not enough participants to make pairs")).toBe(true)
+      expect(summaryCall.text.includes("@alice")).toBe(true)
       expect(next.chats[chatId]?.poll).toBeNull()
     }))
-
   it.effect("createPoll waits for async sendPoll before updating state", () =>
     Effect.gen(function*(_) {
       const chatId = ChatId("-150")
@@ -299,7 +283,6 @@ describe("actions", () => {
       const pollDeferred = yield* _(Deferred.make<{ readonly pollId: PollId; readonly messageId: MessageId }>())
       const telegram = makeAsyncTelegram(pollDeferred)
       const { stateStore } = makeStateStoreStub(state)
-
       const fiber = yield* _(
         createPoll({
           state,
@@ -310,10 +293,8 @@ describe("actions", () => {
           stateStore
         }).pipe(Effect.fork)
       )
-
       yield* _(Deferred.succeed(pollDeferred, { pollId: PollId("poll-async"), messageId: MessageId(999) }))
       const next = yield* _(Fiber.join(fiber))
-
       expect(next.chats[chatId]?.poll?.pollId).toBe(PollId("poll-async"))
     }))
 })
